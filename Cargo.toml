@@ -1,0 +1,13 @@
+[package]
+name = "Aggregator"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+artisan_middleware = { path = "/home/dwhitfield/code/Artisan_Hosting/Libraries/artisan_middleware_lib" }
+#artisan_middleware = "4.0.0"
+dusa_collection_utils = "3.0.4"
+glob = "0.3.1"
+serde = "1.0.215"
+signal-hook = "0.3.17"
+tokio = "1.41.1"

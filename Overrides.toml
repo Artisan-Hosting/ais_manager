@@ -1,0 +1,10 @@
+# Configuration Overrides
+
+environment = "development"        # Environment: development, production
+debug_mode = false                  # Enable or disable debug mode
+log_level = "Trace"                 # Logging level: Info, Debug, Error, etc.
+
+
+[aggregator]
+socket_path = "/tmp/test.sock"    # Path to the socket
+
