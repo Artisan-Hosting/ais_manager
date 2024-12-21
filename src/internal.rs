@@ -41,7 +41,8 @@ pub async fn process_unix(
     .await
     {
         Ok(data) => {
-            let message: ProtocolMessage<AppMessage> = ProtocolMessage::new(Flags::NONE, data)?;
+            let mut message: ProtocolMessage<AppMessage> = ProtocolMessage::new(Flags::SIGNATURE | Flags::ENCODED, data)?;
+            message.header.origin_address = [0, 0, 0, 0];
             let message_bytes: Vec<u8> = message.format().await?;
             send_data(&mut connection.0, message_bytes, proto).await?;
             Ok(())
@@ -126,7 +127,7 @@ async fn command_processor(
                         .try_write_with_timeout(Some(Duration::from_secs(2)))
                         .await
                         .map_err(|mut err| {
-                            err.err_mesg.push_str("status store");
+                            err.err_mesg = "write store".into();
                             err
                         })?;
 
@@ -134,7 +135,7 @@ async fn command_processor(
                         .try_write_with_timeout(Some(Duration::from_secs(2)))
                         .await
                         .map_err(|mut err| {
-                            err.err_mesg.push_str("time store");
+                            err.err_mesg = "time store".into();
                             err
                         })?;
 

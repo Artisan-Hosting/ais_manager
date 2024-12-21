@@ -9,5 +9,6 @@ artisan_middleware = { path = "/home/dwhitfield/code/Artisan_Hosting/Libraries/a
 dusa_collection_utils = "3.0.4"
 glob = "0.3.1"
 serde = "1.0.215"
+serde_json = "1.0.133"
 signal-hook = "0.3.17"
 tokio = "1.41.1"

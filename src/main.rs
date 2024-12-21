@@ -10,12 +10,7 @@ use std::{
 use artisan_middleware::{
     aggregator::{
         load_registered_apps, save_registered_apps, AppStatus, DeregisterApp, RegisterApp, Status,
-    },
-    config::AppConfig,
-    control::ToggleControl,
-    identity::Identifier,
-    state_persistence::{AppState, StatePersistence},
-    timestamp::current_timestamp,
+    }, config::AppConfig, control::ToggleControl, identity::Identifier, state_persistence::{AppState, StatePersistence}, systemd::SystemdService, timestamp::current_timestamp
 };
 
 use config::{generate_initial_state, get_config, get_state_path};
@@ -36,7 +31,7 @@ use status::{process_app_status, trim, update_uptime};
 use tokio::{
     net::{TcpListener, UnixListener},
     sync::Notify,
-    time::sleep,
+    time::{sleep, timeout},
 };
 mod config;
 mod external;
@@ -47,6 +42,7 @@ mod status;
 
 type AppStatusStore = rwarc::LockWithTimeout<HashMap<Stringy, AppStatus>>;
 type AppUpdateTimeStore = rwarc::LockWithTimeout<HashMap<Stringy, u64>>;
+type AppSystemdStore = rwarc::LockWithTimeout<HashMap<Stringy, bool>>;
 
 pub const UPDATE_THRESHOLD: u64 = 30;
 
@@ -63,6 +59,7 @@ async fn main() -> Result<(), ErrorArrayItem> {
     let shutdown_flag: Arc<Notify> = Arc::new(Notify::new());
     let execution: Arc<ToggleControl> = Arc::new(ToggleControl::new());
     let portal_setup: Arc<AtomicBool> = Arc::new(AtomicBool::new(false));
+    let portal_found: Arc<AtomicBool> = Arc::new(AtomicBool::new(false));
 
     let reload_flag_clone = reload_flag.clone();
     reload_monitor(reload_flag_clone);
@@ -85,6 +82,8 @@ async fn main() -> Result<(), ErrorArrayItem> {
         AppStatusStore::new(HashMap::new());
     let app_update_time_store: LockWithTimeout<HashMap<Stringy, u64>> =
         AppUpdateTimeStore::new(HashMap::new());
+    let app_systemd_store: LockWithTimeout<HashMap<Stringy, bool>> =
+        AppSystemdStore::new(HashMap::new());
 
     match load_registered_apps().await {
         Ok(apps) => {
@@ -165,31 +164,123 @@ async fn main() -> Result<(), ErrorArrayItem> {
         }
     });
 
-    // TODO 
-    // add a loop to check in with applications registered with systemd
+    let portal_setup = portal_setup.clone();
+    let portal_found = portal_found.clone();
+    tokio::spawn(async move {
+        loop {
+            if portal_setup.load(Ordering::Relaxed) {
+                log!(LogLevel::Info, "Registered with portal");
+                break;
+            }
 
-    // portal registration
-    if !portal_setup.load(Ordering::Relaxed) {
-        // starting portal discovery
-        let portal_addr: String = get_portal_addr(&config).await?;
-        log!(LogLevel::Debug, "server located at {}", portal_addr);
+            sleep(Duration::from_secs(10)).await;
 
-        // portal identity exchange and registration
-        match query_portal(portal_addr.clone()).await {
-            Ok(_) => {
+            let portal_addr: Stringy = match get_portal_addr(&config).await {
+                Ok(addr) => Stringy::from(addr),
+                Err(err) => {
+                    log!(
+                        LogLevel::Error,
+                        "Exiting portal registration: {}",
+                        err.err_mesg
+                    );
+                    break;
+                }
+            };
+
+            log!(LogLevel::Debug, "server located at {}", portal_addr);
+
+            let result: Result<Result<(), ErrorArrayItem>, tokio::time::error::Elapsed> =
+                timeout(Duration::from_secs(2), query_portal(portal_addr.clone())).await;
+
+            match result {
+                Ok(query_result) => match query_result {
+                    Ok(_) => {
+                        portal_found.store(true, Ordering::Relaxed);
+                    }
+                    Err(err) => {
+                        log!(
+                            LogLevel::Error,
+                            "Failed to validate the portal. Trying again"
+                        );
+                        log!(LogLevel::Trace, "Error details: {}", err);
+                        portal_found.store(false, Ordering::Relaxed);
+                    }
+                },
+                Err(err) => {
+                    log!(LogLevel::Error, "Timeout occurred: {}. trying again", err);
+                }
+            }
+
+            if portal_found.load(Ordering::Relaxed) {
                 if let Ok(id) = Identifier::load_from_file() {
                     log!(LogLevel::Info, "identity loaded:  {}", id.id);
-                    if let Err(err) = register_with_portal(portal_addr, id, &config).await {
+                    if let Err(err) =
+                        register_with_portal(portal_addr.to_string(), id, &config).await
+                    {
                         log!(LogLevel::Error, "Failed to register with portal: {}", err);
                     }
                     portal_setup.store(true, Ordering::Relaxed);
                 }
             }
-            Err(err) => {
-                log!(LogLevel::Error, "Failed to exchange identities: {}", err)
-            }
         }
-    }
+    });
+
+    let store = app_status_store.clone();
+    let systemd = app_systemd_store.clone();
+    let execution_clone = execution.clone();
+    tokio::spawn(async move {
+        loop {
+            execution_clone.wait_if_paused().await;
+            execution_clone.pause();
+
+            let mut app_status_store_write_lock: tokio::sync::RwLockWriteGuard<
+                '_,
+                HashMap<Stringy, AppStatus>,
+            > = match store.try_write().await {
+                Ok(val) => val,
+                Err(err) => {
+                    log!(LogLevel::Error, "continueing: {}", err);
+                    continue;
+                }
+            };
+
+            let mut app_systemd_store_write_lock: tokio::sync::RwLockWriteGuard<
+                '_,
+                HashMap<Stringy, bool>,
+            > = match systemd.try_write().await {
+                Ok(val) => val,
+                Err(err) => {
+                    log!(LogLevel::Error, "continueing: {}", err);
+                    continue;
+                }                
+            };
+            
+            for app in app_status_store_write_lock.iter_mut() {
+                match SystemdService::new(&app.1.app_id) {
+                    Ok(service) => {
+                        app_systemd_store_write_lock.insert(app.0.clone(), true);
+                        if let Ok(val) = service.is_active() {
+                            if val {
+                                if app.1.status == Status::Stopped {
+                                    app.1.status = Status::Running
+                                }
+                            }
+                        }
+                    },
+                    Err(err) => {
+                        log!(LogLevel::Trace, "{}", err);
+                        app_systemd_store_write_lock.insert(app.0.clone(), false);
+                    },
+                }
+            }
+
+            drop(app_systemd_store_write_lock);
+            drop(app_status_store_write_lock);
+
+            execution_clone.resume();
+            sleep(Duration::from_secs(10)).await;
+        }
+    });
 
     // Listeners and reloads
     loop {
@@ -254,11 +345,11 @@ async fn main() -> Result<(), ErrorArrayItem> {
                         let apps_hash = store_lock.iter();
                         log!(LogLevel::Trace, "Turned data into iter!");
                         let mut app_vec = Vec::new();
-        
+
                         for app_hash in apps_hash {
                             app_vec.push(app_hash.1.to_owned());
                         }
-        
+
                         save_registered_apps(&app_vec).await?;
                         log!(LogLevel::Trace, "Saved to fs!");
 
@@ -267,16 +358,16 @@ async fn main() -> Result<(), ErrorArrayItem> {
                         log!(LogLevel::Trace, "Emptied and resized the store lock!");
 
                         let apps = load_registered_apps().await?;
-        
+
                         for app in apps {
                             let app_clone = app.clone();
                             store_lock.insert(app_clone.app_id, app);
                         }
                         log!(LogLevel::Trace, "Refilled the store lock!");
-        
+
                         drop(store_lock);
-        
-        
+
+
                         log!(LogLevel::Trace, "Starting state reload!");
                         // wind down then re initialize the state
                         wind_down_state(&mut state, &state_path).await;

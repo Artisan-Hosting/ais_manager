@@ -1,12 +1,12 @@
 use artisan_middleware::{
-    config::{Aggregator, AppConfig}, state_persistence::{self, AppState, StatePersistence}, timestamp::current_timestamp
+    config::{Aggregator, AppConfig}, state_persistence::{self, AppState, StatePersistence}, timestamp::current_timestamp, version::{aml_version, str_to_version}
 };
 use dusa_collection_utils::{
     log::{set_log_level, LogLevel},
     log,
     stringy::Stringy,
     types::PathType,
-    version::SoftwareVersion,
+    version::{SoftwareVersion, Version, VersionCode},
 };
 
 use crate::update_state;
@@ -16,9 +16,30 @@ pub fn get_config() -> AppConfig {
         Ok(mut data_loaded) => {
             data_loaded.git = None;
             data_loaded.database = None;
-            data_loaded.app_name = Stringy::from_string(env!("CARGO_PKG_NAME").to_string());
+            data_loaded.app_name = Stringy::from(env!("CARGO_PKG_NAME").to_string());
             data_loaded.version = SoftwareVersion::dummy().to_string();
             data_loaded.aggregator = Some(Aggregator{ socket_path: "/tmp/test.sock".into(), socket_permission: Some(755) });
+
+            let raw_version: SoftwareVersion = {
+                // defining the version
+                let library_version: Version = aml_version();
+                let software_version: Version = str_to_version(env!("CARGO_PKG_VERSION"), Some(VersionCode::Production));
+                
+                SoftwareVersion {
+                    application: software_version,
+                    library: library_version,
+                }
+            };
+        
+            data_loaded.version = match serde_json::to_string(&raw_version) {
+                Ok(ver) => ver,
+                Err(err) => {
+                    log!(LogLevel::Error, "{}", err);
+                    std::process::exit(100);
+                },
+            };
+
+            
             data_loaded
         }
         Err(e) => {

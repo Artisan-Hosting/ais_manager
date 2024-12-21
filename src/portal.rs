@@ -1,22 +1,19 @@
 use std::net::IpAddr;
 
 use artisan_middleware::{
-    communication_proto::{send_empty_ok, send_message, Flags, Proto}, config::AppConfig, dns::resolve_url, identity::Identifier, network::{get_external_ip, get_local_ip}, portal::PortalMessage
+    communication_proto::{send_empty_ok, send_message, Flags, Proto}, config::AppConfig, identity::Identifier, network::{get_external_ip, get_local_ip, resolve_url}, portal::PortalMessage
 };
-use dusa_collection_utils::errors::{ErrorArrayItem, Errors};
+use dusa_collection_utils::{errors::{ErrorArrayItem, Errors}, stringy::Stringy};
 use dusa_collection_utils::log;
 use dusa_collection_utils::log::LogLevel;
 use tokio::{io::AsyncWriteExt, net::TcpStream};
 
-pub async fn query_portal(portal_address: String) -> Result<(), ErrorArrayItem> {
-    return Err(ErrorArrayItem::new(
-        Errors::AuthenticationError,
-        "Failed to discovery and validate potral and identify".to_owned(),
-    ));
+pub async fn query_portal(portal_address: Stringy) -> Result<(), ErrorArrayItem> {
     
-    let mut stream = TcpStream::connect(portal_address).await?;
+    let mut stream = TcpStream::connect(portal_address.to_string()).await?;
 
     let discovery = PortalMessage::Discover;
+
     match send_message::<TcpStream, PortalMessage, PortalMessage>(
         &mut stream,
         Flags::NONE,
@@ -114,7 +111,7 @@ pub async fn get_portal_addr(config: &AppConfig) -> Result<String, ErrorArrayIte
     }
 
 
-    let portal_addrs: Option<Vec<IpAddr>> = resolve_url("portal.arhst.net")
+    let portal_addrs: Option<Vec<IpAddr>> = resolve_url("portal.arhst.net", None)
         .await
         .map_err(|err| ErrorArrayItem::new(Errors::Network, err.to_string()))?;
 
