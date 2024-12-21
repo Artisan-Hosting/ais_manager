@@ -3,19 +3,6 @@
 version = 3
 
 [[package]]
-name = "Aggregator"
-version = "0.1.0"
-dependencies = [
- "artisan_middleware",
- "dusa_collection_utils 3.1.0",
- "glob",
- "serde",
- "serde_json",
- "signal-hook",
- "tokio",
-]
-
-[[package]]
 name = "addr2line"
 version = "0.24.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -63,6 +50,19 @@ dependencies = [
 ]
 
 [[package]]
+name = "ais_manager"
+version = "1.0.0"
+dependencies = [
+ "artisan_middleware",
+ "dusa_collection_utils 3.1.0",
+ "glob",
+ "serde",
+ "serde_json",
+ "signal-hook",
+ "tokio",
+]
+
+[[package]]
 name = "android-tzdata"
 version = "0.1.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -80,6 +80,8 @@ dependencies = [
 [[package]]
 name = "artisan_middleware"
 version = "4.1.3"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "aef0b1ba29a784ede189c127f7561afaa5485adb644c19cccf45545b458dc25a"
 dependencies = [
  "bincode",
  "bitflags 2.6.0",
