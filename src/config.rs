@@ -1,5 +1,5 @@
 use artisan_middleware::{
-    config::{Aggregator, AppConfig}, state_persistence::{self, AppState, StatePersistence}, timestamp::current_timestamp, version::{aml_version, str_to_version}
+    config::AppConfig, state_persistence::{self, AppState, StatePersistence}, timestamp::current_timestamp, version::{aml_version, str_to_version}
 };
 use dusa_collection_utils::{
     log::{set_log_level, LogLevel},
@@ -14,11 +14,11 @@ use crate::update_state;
 pub fn get_config() -> AppConfig {
     match artisan_middleware::config::AppConfig::new() {
         Ok(mut data_loaded) => {
-            data_loaded.git = None;
+            // data_loaded.git = None;
             data_loaded.database = None;
             data_loaded.app_name = Stringy::from(env!("CARGO_PKG_NAME").to_string());
             data_loaded.version = SoftwareVersion::dummy().to_string();
-            data_loaded.aggregator = Some(Aggregator{ socket_path: "/tmp/test.sock".into(), socket_permission: Some(755) });
+            // data_loaded.aggregator = Some(Aggregator{ socket_path: "/tmp/test.sock".into(), socket_permission: Some(755) });
 
             let raw_version: SoftwareVersion = {
                 // defining the version
@@ -65,6 +65,7 @@ pub async fn generate_initial_state(config: &AppConfig) -> AppState {
             loaded_data.config.debug_mode = config.debug_mode;
             loaded_data.last_updated = current_timestamp();
             loaded_data.config.log_level = config.log_level;
+            loaded_data.config.aggregator = config.aggregator.clone();
             set_log_level(loaded_data.config.log_level);
             if config.debug_mode == true {
                 set_log_level(LogLevel::Debug);

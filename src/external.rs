@@ -2,14 +2,12 @@ use std::{net::SocketAddr, sync::Arc, time::Duration};
 
 use artisan_middleware::{
     aggregator::{AppMessage, Command, CommandResponse, CommandType},
-    communication_proto::{
-        read_until, send_data, send_empty_err, Flags, Proto, ProtocolMessage, EOL,
-    },
     control::ToggleControl,
     systemd::SystemdService,
 };
 use dusa_collection_utils::{errors::ErrorArrayItem, log};
 use dusa_collection_utils::{log::LogLevel, stringy::Stringy};
+use simple_comms::{network::send_receive::{send_data, send_empty_err}, protocol::{flags::Flags, header::EOL, io_helpers::read_until, message::ProtocolMessage, proto::Proto}};
 use tokio::{net::TcpStream, sync::Notify};
 
 use crate::AppStatusStore;
@@ -41,7 +39,7 @@ pub async fn process_tcp(
             match command_processor(command, execution, reload, app_status_store).await {
                 Ok(data) => {
                     let message: ProtocolMessage<AppMessage> = ProtocolMessage::new(
-                        Flags::ENCRYPTED | Flags::ENCODED | Flags::COMPRESSED,
+                        Flags::OPTIMIZED,
                         data,
                     )?;
                     let message_bytes: Vec<u8> = message.format().await?;

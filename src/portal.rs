@@ -1,11 +1,12 @@
 use std::net::IpAddr;
 
 use artisan_middleware::{
-    communication_proto::{send_empty_ok, send_message, Flags, Proto}, config::AppConfig, identity::Identifier, network::{get_external_ip, get_local_ip, resolve_url}, portal::PortalMessage
+    config::AppConfig, identity::Identifier, network::resolve_url, portal::PortalMessage
 };
 use dusa_collection_utils::{errors::{ErrorArrayItem, Errors}, stringy::Stringy};
 use dusa_collection_utils::log;
 use dusa_collection_utils::log::LogLevel;
+use simple_comms::{network::{send_receive::{send_empty_ok, send_message}, utils::{get_external_ip, get_local_ip}}, protocol::{flags::Flags, proto::Proto}};
 use tokio::{io::AsyncWriteExt, net::TcpStream};
 
 pub async fn query_portal(portal_address: Stringy) -> Result<(), ErrorArrayItem> {

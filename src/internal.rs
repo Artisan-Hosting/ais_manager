@@ -2,12 +2,12 @@ use std::{sync::Arc, time::Duration};
 
 use artisan_middleware::{
     aggregator::{AppMessage, CommandResponse, CommandType},
-    communication_proto::{read_until, send_data, Flags, Proto, ProtocolMessage, EOL},
     control::ToggleControl,
     timestamp::current_timestamp,
 };
 use dusa_collection_utils::log;
 use dusa_collection_utils::{errors::ErrorArrayItem, log::LogLevel};
+use simple_comms::{network::send_receive::send_data, protocol::{flags::Flags, header::EOL, io_helpers::read_until, message::ProtocolMessage, proto::Proto}};
 use tokio::net::{unix::SocketAddr, UnixStream};
 
 use crate::{deregister_app, register_app, AppStatusStore, AppUpdateTimeStore};
@@ -41,7 +41,7 @@ pub async fn process_unix(
     .await
     {
         Ok(data) => {
-            let mut message: ProtocolMessage<AppMessage> = ProtocolMessage::new(Flags::SIGNATURE | Flags::ENCODED, data)?;
+            let mut message: ProtocolMessage<AppMessage> = ProtocolMessage::new(Flags::SIGNATURE , data)?;
             message.header.origin_address = [0, 0, 0, 0];
             let message_bytes: Vec<u8> = message.format().await?;
             send_data(&mut connection.0, message_bytes, proto).await?;
@@ -160,7 +160,7 @@ async fn command_processor(
 
                             return Ok(AppMessage::Response(CommandResponse {
                                 app_id: app.app_id,
-                                command_type: CommandType::Custom("Register".into()),
+                                command_type: CommandType::Custom("Update".into()),
                                 success: true,
                                 message: None,
                             }));
@@ -171,7 +171,7 @@ async fn command_processor(
                             // We tried to update an app that didnt exist
                             return Ok(AppMessage::Response(CommandResponse {
                                 app_id: app.app_id,
-                                command_type: CommandType::Custom("Register".into()),
+                                command_type: CommandType::Custom("Update".into()),
                                 success: false,
                                 message: Some(format!(
                                     "Tried to update an app that wasn't registered"
