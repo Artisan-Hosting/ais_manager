@@ -85,6 +85,7 @@ async fn main() -> Result<(), ErrorArrayItem> {
     let app_systemd_store: LockWithTimeout<HashMap<Stringy, bool>> =
         AppSystemdStore::new(HashMap::new());
 
+    // * Loading registered applications from fs 
     match load_registered_apps().await {
         Ok(apps) => {
             let mut app_status_store_write_lock: tokio::sync::RwLockWriteGuard<
@@ -155,7 +156,7 @@ async fn main() -> Result<(), ErrorArrayItem> {
     }?;
     set_file_permission(aggregator.clone(), 0o777).uf_unwrap()?;
 
-    // Monitor for timed out applications
+    // * Monitor for timed out applications
     let store = app_status_store.clone();
     let execution_clone = execution.clone();
     let update_time_store = app_update_time_store.clone();
@@ -165,11 +166,12 @@ async fn main() -> Result<(), ErrorArrayItem> {
         }
     });
 
-    let portal_setup = portal_setup.clone();
-    let portal_found = portal_found.clone();
+    // * Portal setup routine
+    let portal_setup_clone = portal_setup.clone();
+    let portal_found_clone = portal_found.clone();
     tokio::spawn(async move {
         loop {
-            if portal_setup.load(Ordering::Relaxed) {
+            if portal_setup_clone.load(Ordering::Relaxed) {
                 log!(LogLevel::Info, "Registered with portal");
                 break;
             }
@@ -196,15 +198,15 @@ async fn main() -> Result<(), ErrorArrayItem> {
             match result {
                 Ok(query_result) => match query_result {
                     Ok(_) => {
-                        portal_found.store(true, Ordering::Relaxed);
+                        portal_found_clone.store(true, Ordering::Relaxed);
                     }
                     Err(err) => {
                         log!(
                             LogLevel::Error,
-                            "Failed to validate the portal. Trying again"
+                            "Failed to validate the portal. Trying again: {}", err
                         );
                         log!(LogLevel::Trace, "Error details: {}", err);
-                        portal_found.store(false, Ordering::Relaxed);
+                        portal_found_clone.store(false, Ordering::Relaxed);
                     }
                 },
                 Err(err) => {
@@ -212,7 +214,7 @@ async fn main() -> Result<(), ErrorArrayItem> {
                 }
             }
 
-            if portal_found.load(Ordering::Relaxed) {
+            if portal_found_clone.load(Ordering::Relaxed) {
                 if let Ok(id) = Identifier::load_from_file() {
                     log!(LogLevel::Info, "identity loaded:  {}", id.id);
                     if let Err(err) =
@@ -220,12 +222,13 @@ async fn main() -> Result<(), ErrorArrayItem> {
                     {
                         log!(LogLevel::Error, "Failed to register with portal: {}", err);
                     }
-                    portal_setup.store(true, Ordering::Relaxed);
+                    portal_setup_clone.store(true, Ordering::Relaxed);
                 }
             }
         }
     });
 
+    // * Checking initial application states against systemd
     let store = app_status_store.clone();
     let systemd = app_systemd_store.clone();
     let execution_clone = execution.clone();
@@ -284,6 +287,8 @@ async fn main() -> Result<(), ErrorArrayItem> {
     });
 
     // Listeners and reloads
+    let portal_setup = portal_setup.clone();
+    let portal_found = portal_found.clone();
     loop {
         tokio::select! {
             Ok(conn) = tcp_listener.accept() => {
@@ -315,7 +320,7 @@ async fn main() -> Result<(), ErrorArrayItem> {
             }
 
             _ = reload_flag.notified() => {
-                match execution.wait_with_timeout(Duration::from_secs(600)).await {
+                match execution.wait_with_timeout(Duration::from_secs(10)).await {
                     Ok(_) => {
                         execution.pause();
                         sleep(Duration::from_secs(1)).await;
@@ -367,6 +372,10 @@ async fn main() -> Result<(), ErrorArrayItem> {
                         log!(LogLevel::Trace, "Refilled the store lock!");
 
                         drop(store_lock);
+
+                        // * Signaling we need to re-register with the portal
+                        portal_setup.store(false, Ordering::Relaxed);
+                        portal_found.store(false, Ordering::Relaxed);
 
 
                         log!(LogLevel::Trace, "Starting state reload!");
