@@ -2310,9 +2310,9 @@ dependencies = [
 
 [[package]]
 name = "simple_comms"
-version = "1.0.0"
+version = "1.0.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "27bbb9123c1b56498388f38cc67838140c4785a38be762aa8616824d54ef81bd"
+checksum = "a8a4c779740a5715921a1cc35da5512dbfb66952f04fbd84b658e7ac06f5975e"
 dependencies = [
  "aes-gcm",
  "bincode",

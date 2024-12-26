@@ -39,7 +39,7 @@ pub async fn process_tcp(
             match command_processor(command, execution, reload, app_status_store).await {
                 Ok(data) => {
                     let message: ProtocolMessage<AppMessage> = ProtocolMessage::new(
-                        Flags::OPTIMIZED,
+                        Flags::COMPRESSED | Flags::ENCRYPTED,
                         data,
                     )?;
                     let message_bytes: Vec<u8> = message.format().await?;
