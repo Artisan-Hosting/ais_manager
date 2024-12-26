@@ -202,7 +202,7 @@ pub async fn process_app_status(
 
     async fn update_self(app_update_time_store: AppUpdateTimeStore) -> Result<(), ErrorArrayItem> {
         let mut app_time = app_update_time_store.try_write().await?;
-        app_time.insert("Aggregator".into(), current_timestamp());
+        app_time.insert("ais_manager".into(), current_timestamp());
         drop(app_time);
         Ok(())
     }
