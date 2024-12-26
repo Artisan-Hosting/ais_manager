@@ -16,7 +16,7 @@ use artisan_middleware::{
 use config::{generate_initial_state, get_config, get_state_path};
 use dusa_collection_utils::{
     errors::ErrorArrayItem,
-    functions::del_file,
+    functions::{del_file, set_file_permission},
     log::LogLevel,
     rwarc::{self, LockWithTimeout},
     stringy::Stringy,
@@ -153,6 +153,7 @@ async fn main() -> Result<(), ErrorArrayItem> {
         }
         false => UnixListener::bind(aggregator).map_err(ErrorArrayItem::from),
     }?;
+    set_file_permission(aggregator.clone(), 0o777).uf_unwrap()?;
 
     // Monitor for timed out applications
     let store = app_status_store.clone();
