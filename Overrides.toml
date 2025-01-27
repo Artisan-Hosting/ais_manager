@@ -1,0 +1,12 @@
+# Overrides for the default config from the lib
+
+debug_mode = false
+log_level = "Trace"
+# environment = "systemonly"
+
+[git]
+default_server = "GitHub"
+credentials_file = "/opt/artisan/git.cf"
+
+[aggregator]
+socket_path = "/var/run/manager.sock"
