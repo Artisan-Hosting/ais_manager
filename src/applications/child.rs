@@ -307,6 +307,7 @@ pub async fn populate_initial_state_lock(applications: Applications) -> Result<(
     for app in app_states {
         let status = match app.1 {
             Some(state) => AppStatus {
+                pid: state.pid,
                 app_id: Stringy::from(&state.name),
                 uptime: Some(current_timestamp()),
                 error: if !state.error_log.is_empty() {
@@ -319,9 +320,10 @@ pub async fn populate_initial_state_lock(applications: Applications) -> Result<(
                 expected_status: Status::Running,
                 system_application: app.2,
                 status: Status::Running,
+                git_id: state.config.app_name.replace("ais_", "").into(),
             },
             None => AppStatus {
-                app_id: Stringy::from(app.0),
+                app_id: Stringy::from(app.clone().0),
                 status: Status::Unknown,
                 uptime: None,
                 error: Some(vec![ErrorArrayItem::new(
@@ -332,6 +334,8 @@ pub async fn populate_initial_state_lock(applications: Applications) -> Result<(
                 timestamp: current_timestamp(),
                 expected_status: Status::Unknown,
                 system_application: app.2,
+                git_id: app.0.replace("ais_", "").into(),
+                pid: 0
             },
         };
 
