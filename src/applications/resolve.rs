@@ -1,5 +1,5 @@
 use artisan_middleware::config::AppConfig;
-use artisan_middleware::dusa_collection_utils::errors::ErrorArrayItem;
+use artisan_middleware::dusa_collection_utils::errors::{ErrorArrayItem, Errors};
 use artisan_middleware::dusa_collection_utils::log;
 use artisan_middleware::dusa_collection_utils::stringy::Stringy;
 use artisan_middleware::dusa_collection_utils::{log::LogLevel, types::PathType};
@@ -10,6 +10,8 @@ use serde::{Deserialize, Serialize};
 use std::{fmt, fs};
 use tokio::task;
 
+use super::child::{CLIENT_APPLICATION_ARRAY, SYSTEM_APPLICATION_ARRAY};
+
 // pub static SYSTEMAPPLICATIONS: [&'static str; 4] = ["gitmon", "ids", "self", "messenger"];
 pub static SYSTEMAPPLICATIONS: [&'static str; 2] = ["gitmon", "self"];
 
@@ -17,6 +19,12 @@ pub static SYSTEMAPPLICATIONS: [&'static str; 2] = ["gitmon", "self"];
 pub enum Applications {
     System(Vec<SystemApplication>),
     Client(Vec<ClientApplication>),
+}
+
+#[derive(Debug, Serialize, Deserialize)]
+pub enum Application {
+    System(SystemApplication),
+    Client(ClientApplication),
 }
 
 #[allow(dead_code)]
@@ -60,7 +68,7 @@ pub struct _ClientEnviornment {
 }
 
 #[allow(unused_assignments)]
-pub async fn resolve_system_applications() -> Vec<SystemApplication> {
+pub async fn resolve_system_applications() -> Result<(), ErrorArrayItem> {
     let system_application_names: Vec<String> = SYSTEMAPPLICATIONS
         .iter()
         .map(|app_name| {
@@ -85,7 +93,7 @@ pub async fn resolve_system_applications() -> Vec<SystemApplication> {
                 match StatePersistence::load_state(&application_state_path).await {
                     Ok(state) => Some(state),
                     Err(err) => {
-                        log!(LogLevel::Error, "{}", err);
+                        log!(LogLevel::Error, "Couldn't load system app state data: {}", err);
                         None
                     }
                 }
@@ -125,12 +133,22 @@ pub async fn resolve_system_applications() -> Vec<SystemApplication> {
         }
     }
 
-    return results;
+    // Writing to the system array
+    let mut system_application_array_write_lock: tokio::sync::RwLockWriteGuard<
+        '_,
+        std::collections::HashMap<String, SystemApplication>,
+    > = SYSTEM_APPLICATION_ARRAY.try_write().await?;
+
+    for app in results {
+        system_application_array_write_lock.insert(app.clone().name, app);
+    }
+
+    Ok(())
 }
 
 #[allow(unused_assignments)]
-pub async fn resolve_client_applications(config: &AppConfig) -> Vec<ClientApplication> {
-    let mut application_list = Vec::new();
+pub async fn resolve_client_applications(config: &AppConfig) -> Result<(), ErrorArrayItem> {
+    let mut application_list: Vec<String> = Vec::new();
 
     let dir_read: fs::ReadDir = match fs::read_dir("/opt/artisan/bin") {
         Ok(data) => data,
@@ -140,7 +158,7 @@ pub async fn resolve_client_applications(config: &AppConfig) -> Vec<ClientApplic
                 "Failed to read bins from /opt/artisan/bin: {}",
                 err
             );
-            return Vec::new();
+            return Err(ErrorArrayItem::from(err));
         }
     };
 
@@ -184,7 +202,10 @@ pub async fn resolve_client_applications(config: &AppConfig) -> Vec<ClientApplic
                 LogLevel::Trace,
                 "Unable to validate what files to run, missing git credentials file"
             );
-            return Vec::new();
+            return Err(ErrorArrayItem::new(
+                Errors::GeneralError,
+                "Failed to parse what applications to run",
+            ));
         }
     };
 
@@ -193,7 +214,7 @@ pub async fn resolve_client_applications(config: &AppConfig) -> Vec<ClientApplic
         Ok(data) => data,
         Err(err) => {
             log!(LogLevel::Error, "{}", err);
-            return Vec::new();
+            return Err(err);
         }
     };
 
@@ -253,7 +274,7 @@ pub async fn resolve_client_applications(config: &AppConfig) -> Vec<ClientApplic
                 match StatePersistence::load_state(&application_state_path).await {
                     Ok(state) => Some(state),
                     Err(err) => {
-                        log!(LogLevel::Error, "{}", err);
+                        log!(LogLevel::Error, "Couldn't load client state data: {}", err);
                         None
                     }
                 }
@@ -285,5 +306,14 @@ pub async fn resolve_client_applications(config: &AppConfig) -> Vec<ClientApplic
         }
     }
 
-    return results;
+    let mut client_application_array_write_lock: tokio::sync::RwLockWriteGuard<
+        '_,
+        std::collections::HashMap<String, ClientApplication>,
+    > = CLIENT_APPLICATION_ARRAY.try_write().await?;
+
+    for app in results {
+        client_application_array_write_lock.insert(app.clone().name, app);
+    }
+
+    Ok(())
 }
