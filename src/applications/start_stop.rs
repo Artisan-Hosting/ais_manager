@@ -12,14 +12,17 @@ use artisan_middleware::{aggregator::Status, config::AppConfig, state_persistenc
 use nix::libc::kill;
 
 use crate::applications::child::populate_initial_state_lock;
-use crate::applications::resolve::Applications;
 use crate::applications::{
     child::{
-        spawn_client_applications, spawn_system_applications, SupervisedProcesses,
-        APP_STATUS_ARRAY, CLIENT_APPLICATION_HANDLER, SYSTEM_APPLICATION_HANDLER,
+        SupervisedProcesses, APP_STATUS_ARRAY, CLIENT_APPLICATION_HANDLER,
+        SYSTEM_APPLICATION_HANDLER,
     },
     resolve::{resolve_client_applications, resolve_system_applications},
 };
+use crate::system::state::save_state;
+
+use super::child::{spawn_single_application, CLIENT_APPLICATION_ARRAY, SYSTEM_APPLICATION_ARRAY};
+use super::resolve::Application;
 
 pub async fn stop_application(app_id: &Stringy) -> Result<(), ErrorArrayItem> {
     let mut app_status_array_write_lock: tokio::sync::RwLockWriteGuard<
@@ -239,16 +242,20 @@ async fn start_system_application(
     state: &mut AppState,
     state_path: &PathType,
 ) -> Result<bool, ErrorArrayItem> {
-    for sys_app in resolve_system_applications().await {
-        if app_id.to_string() == sys_app.name {
-            spawn_system_applications(
-                SYSTEM_APPLICATION_HANDLER.clone(),
-                vec![sys_app.clone()],
-                state,
-                state_path,
-            )
-            .await?;
-            populate_initial_state_lock(Applications::System(vec![sys_app])).await?;
+    // update the system application index
+    resolve_system_applications().await?;
+
+    for sys_app in SYSTEM_APPLICATION_ARRAY
+        .try_read()
+        .await?
+        .clone()
+        .into_iter()
+    {
+        if app_id.to_string() == sys_app.0 {
+            spawn_single_application(Application::System(sys_app.1), state, state_path)
+                .await?;
+            populate_initial_state_lock(state).await?;
+            save_state(state, state_path).await;
             return Ok(true);
         }
     }
@@ -262,16 +269,20 @@ async fn start_client_application(
     state: &mut AppState,
     state_path: &PathType,
 ) -> Result<bool, ErrorArrayItem> {
-    for cli_app in resolve_client_applications(config).await {
-        if app_id.to_string() == cli_app.name {
-            spawn_client_applications(
-                CLIENT_APPLICATION_HANDLER.clone(),
-                vec![cli_app.clone()],
-                state,
-                state_path,
-            )
-            .await?;
-            populate_initial_state_lock(Applications::Client(vec![cli_app])).await?;
+    // updating the client application index
+    resolve_client_applications(config).await?;
+
+    for cli_app in CLIENT_APPLICATION_ARRAY
+        .try_read()
+        .await?
+        .clone()
+        .into_iter()
+    {
+        if app_id.to_string() == cli_app.0 {
+            spawn_single_application(Application::Client(cli_app.1), state, state_path)
+                .await?;
+            populate_initial_state_lock(state).await?;
+            save_state(state, state_path).await;
             return Ok(true);
         }
     }
