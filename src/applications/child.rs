@@ -86,7 +86,7 @@ pub async fn spawn_system_applications(
         };
 
         let system_process: SupervisedProcesses = match process {
-            Some(proc) => {
+            Some(mut proc) => {
                 proc.monitor_usage().await;
                 SupervisedProcesses::Process(proc)
             }
@@ -94,7 +94,7 @@ pub async fn spawn_system_applications(
                 let mut command: Command = Command::new(system_app.1.path);
                 let config_path: PathType = PathType::Content(format!("/etc/{}/", system_app.0));
 
-                let system_child: SupervisedChild = match spawn_complex_process(
+                let mut system_child: SupervisedChild = match spawn_complex_process(
                     &mut command,
                     Some(config_path.clone()),
                     true,
@@ -316,7 +316,7 @@ pub async fn spawn_single_application(
             };
 
             let system_process: SupervisedProcesses = match process {
-                Some(proc) => {
+                Some(mut proc) => {
                     proc.monitor_usage().await;
                     SupervisedProcesses::Process(proc)
                 }
@@ -325,7 +325,7 @@ pub async fn spawn_single_application(
                     let config_path: PathType =
                         PathType::Content(format!("/etc/{}/", system_application.name));
 
-                    let system_child: SupervisedChild = match spawn_complex_process(
+                    let mut system_child: SupervisedChild = match spawn_complex_process(
                         &mut command,
                         Some(config_path.clone()),
                         true,
@@ -555,17 +555,17 @@ pub async fn populate_initial_state_lock(state: &mut AppState) -> Result<(), Err
             Some(state) => AppStatus {
                 pid: state.pid,
                 app_id: Stringy::from(&state.name),
-                uptime: Some(current_timestamp()),
+                uptime: None,
                 error: if !state.error_log.is_empty() {
                     Some(state.error_log)
                 } else {
                     None
                 },
                 metrics: None,
-                timestamp: current_timestamp(),
+                timestamp: state.last_updated,
                 expected_status: Status::Running,
                 system_application: app.2,
-                status: Status::Running,
+                status: state.status,
                 git_id: state.config.app_name.replace("ais_", "").into(),
             },
             None => AppStatus {
