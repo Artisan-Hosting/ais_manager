@@ -1,5 +1,4 @@
 use artisan_middleware::aggregator::{AppStatus, Status};
-use artisan_middleware::config::AppConfig;
 use artisan_middleware::dusa_collection_utils::functions::current_timestamp;
 use artisan_middleware::dusa_collection_utils::log;
 use artisan_middleware::dusa_collection_utils::stringy::Stringy;
@@ -7,23 +6,19 @@ use artisan_middleware::dusa_collection_utils::types::PathType;
 use artisan_middleware::dusa_collection_utils::{
     errors::ErrorArrayItem, log::LogLevel, rwarc::LockWithTimeout,
 };
-use artisan_middleware::process_manager::SupervisedProcess;
 use artisan_middleware::state_persistence::AppState;
-use signal_hook::iterator::Handle;
 use std::collections::{HashMap, HashSet};
-use std::time::Duration;
 
 use crate::applications::child::{
     spawn_single_application, CLIENT_APPLICATION_HANDLER, SYSTEM_APPLICATION_HANDLER,
 };
 use crate::applications::resolve::{
-    resolve_client_applications, resolve_system_applications, Application, SystemApplication,
+ resolve_system_applications, Application, SystemApplication,
 };
 
 use super::child::{
-    populate_initial_state_lock, SupervisedProcesses, APP_STATUS_ARRAY, CLIENT_APPLICATION_ARRAY, SYSTEM_APPLICATION_ARRAY
+    populate_initial_state_lock, SupervisedProcesses, APP_STATUS_ARRAY, SYSTEM_APPLICATION_ARRAY
 };
-use super::pid::reclaim_child;
 
 pub async fn monitor_application_resource_usage(
     handler: LockWithTimeout<HashMap<String, SupervisedProcesses>>,
@@ -278,149 +273,6 @@ pub async fn handle_new_system_applications(
     Ok(())
 }
 
-pub async fn _update_application_state_from_disk(
-    state: AppState,
-    config: &AppConfig,
-) -> Result<(), ErrorArrayItem> {
-    // Update both indexs
-    resolve_client_applications(config).await?;
-    resolve_system_applications().await?;
-
-    let mut application_status_array_write_lock: tokio::sync::RwLockWriteGuard<
-        '_,
-        HashMap<Stringy, AppStatus>,
-    > = APP_STATUS_ARRAY
-        .try_write_with_timeout(Some(Duration::from_secs(2)))
-        .await?;
-
-    if state.config.environment != "systemonly" {
-        let client_application_array_read_lock = CLIENT_APPLICATION_ARRAY.try_read().await?;
-
-        for client in client_application_array_read_lock.values() {
-            if let Some(application_array_entry) =
-                application_status_array_write_lock.get_mut(&Stringy::from(client.name.clone()))
-            {
-                if let Some(state) = &client.state {
-                    application_array_entry.status = state.status;
-
-                    if state.error_log.is_empty() {
-                        application_array_entry.error = None;
-                    } else {
-                        application_array_entry.error = Some(state.error_log.clone())
-                    };
-
-                    // TODO add system to re-capture the pid if it's diffrent from what we have
-                    if state.pid != application_array_entry.pid {
-                        let mut client_application_handler_write_lock: tokio::sync::RwLockWriteGuard<
-                            '_,
-                            HashMap<String, SupervisedProcesses>,
-                        > = CLIENT_APPLICATION_HANDLER.try_write().await?;
-
-                        let mut captured_process: SupervisedProcess =
-                            reclaim_child(state.pid).await?;
-                        captured_process.monitor_usage().await;
-                        if let Some(old_handle) = client_application_handler_write_lock.insert(
-                            state.name.clone(),
-                            SupervisedProcesses::Process(captured_process),
-                        ) {
-                            match old_handle {
-                                SupervisedProcesses::Child(proc) => {
-                                    log!(
-                                        LogLevel::Info,
-                                        "Old application handle dropped: {}",
-                                        proc.get_pid().await?
-                                    )
-                                }
-                                SupervisedProcesses::Process(proc) => {
-                                    log!(
-                                        LogLevel::Info,
-                                        "Old application handle dropped: {}",
-                                        proc.get_pid()
-                                    )
-                                }
-                            }
-                        };
-                    }
-                } else {
-                    log!(LogLevel::Debug, "Entry: {} has no state file", client.name);
-                    continue;
-                }
-            } else {
-                log!(
-                    LogLevel::Debug,
-                    "Entry: {} not in the array, we might be out of data",
-                    client.name
-                );
-                continue;
-            }
-        }
-    }
-
-    // System applications
-    {
-        let system_application_array_read_lock = SYSTEM_APPLICATION_ARRAY.try_read().await?;
-
-        for system in system_application_array_read_lock.values() {
-            if let Some(application_array_entry) =
-                application_status_array_write_lock.get_mut(&Stringy::from(system.name.clone()))
-            {
-                if let Some(state) = &system.state {
-                    application_array_entry.status = state.status;
-
-                    if state.error_log.is_empty() {
-                        application_array_entry.error = None;
-                    } else {
-                        application_array_entry.error = Some(state.error_log.clone())
-                    };
-
-                    // TODO add system to re-capture the pid if it's diffrent from what we have
-                    if state.pid != application_array_entry.pid {
-                        let mut system_application_handler_write_lock: tokio::sync::RwLockWriteGuard<
-                            '_,
-                            HashMap<String, SupervisedProcesses>,
-                        > = CLIENT_APPLICATION_HANDLER.try_write().await?;
-
-                        let mut captured_process: SupervisedProcess =
-                            reclaim_child(state.pid).await?;
-                        captured_process.monitor_usage().await;
-
-                        system_application_handler_write_lock.remove(&state.name.clone());
-                        system_application_handler_write_lock.insert(
-                            state.name.clone(),
-                            SupervisedProcesses::Process(captured_process),
-                        );
-
-                        // if let Some(old_handle) = system_application_handler_write_lock.insert(
-                        //     state.name.clone(),
-                        //     SupervisedProcesses::Process(captured_process),
-                        // ) {
-                        //     match old_handle {
-                        //         SupervisedProcesses::Child(proc) => {
-                        //             log!(LogLevel::Info, "Old application handle dropped: {}", proc.get_pid().await?)
-                        //         }
-                        //         SupervisedProcesses::Process(proc) => {
-                        //             log!(LogLevel::Info, "Old application handle dropped: {}", proc.get_pid())
-                        //         }
-                        //     }
-                        // };
-                    }
-                } else {
-                    log!(LogLevel::Debug, "Entry: {} has no state file", system.name);
-                    continue;
-                }
-            } else {
-                log!(
-                    LogLevel::Debug,
-                    "Entry: {} not in the array, we might be out of data",
-                    system.name
-                );
-                continue;
-            }
-        }
-    }
-
-    Ok(())
-}
 
 fn calculate_uptime(app: &mut AppStatus) {
     let is_running: bool = app.status != Status::Unknown
