@@ -39,17 +39,13 @@ impl fmt::Display for PortalAddr {
     }
 }
 
-async fn establish_portal_connection(
-    address: &PortalAddr,
-) -> Result<TcpStream, ErrorArrayItem> {
+async fn establish_portal_connection(address: &PortalAddr) -> Result<TcpStream, ErrorArrayItem> {
     TcpStream::connect(format!("{}:{}", address.addr, address.port))
         .await
         .map_err(ErrorArrayItem::from)
 }
 
-async fn portal_discovery(
-    stream: &mut TcpStream,
-) -> Result<(), ErrorArrayItem> {
+async fn portal_discovery(stream: &mut TcpStream) -> Result<(), ErrorArrayItem> {
     let discovery = PortalMessage::Discover;
     match send_message::<TcpStream, PortalMessage, PortalMessage>(
         stream,
@@ -213,8 +209,8 @@ async fn portal_registration(
         Ok(response) => match response.get_payload().await {
             PortalMessage::RegisterResponse(_res) => {
                 PortalState::portal_linked(PORTAL_CONTROLS.clone()).await?;
-                return Ok(())
-            },
+                return Ok(());
+            }
             PortalMessage::Error(err) => {
                 return Err(ErrorArrayItem::new(
                     Errors::Network,
@@ -237,9 +233,16 @@ async fn portal_registration(
     }
 }
 
-
 #[rustfmt::skip]
 pub async fn connect_with_portal(config: &AppConfig) -> Result<(), ErrorArrayItem> {
+    if PortalState::is_portal_linked(PORTAL_CONTROLS.clone()).await? {
+        let addrs = PortalState::portal_addrs(PORTAL_CONTROLS.clone()).await?;
+        for addr in addrs {
+            log!(LogLevel::Debug, "Already linked to portal: {}", addr);
+        }        
+        return Ok(());
+    }
+    
     get_portal_addr(&config).await?;
 
     for portal_conn in PortalState::portal_addrs(PORTAL_CONTROLS.clone()).await? {
@@ -270,6 +273,7 @@ pub async fn connect_with_portal(config: &AppConfig) -> Result<(), ErrorArrayIte
                 log!(LogLevel::Error, "Failed to register with portal @ {} -> {}", portal_conn, err);
             } else {
                 log!(LogLevel::Debug, "Registered with portal {} !", portal_conn);
+                PortalState::portal_linked(PORTAL_CONTROLS.clone()).await?;
             }
         }
     }
