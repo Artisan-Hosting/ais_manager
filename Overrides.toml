@@ -2,7 +2,7 @@
 
 debug_mode = false
 log_level = "Trace"
-# environment = "systemonly"
+#environment = "systemonly"
 
 [git]
 default_server = "GitHub"

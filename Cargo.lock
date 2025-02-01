@@ -119,8 +119,9 @@ dependencies = [
 
 [[package]]
 name = "artisan_middleware"
-version = "4.3.2"
+version = "4.3.3"
 dependencies = [
+ "aes-gcm",
  "chrono",
  "colored 2.2.0",
  "colorized",

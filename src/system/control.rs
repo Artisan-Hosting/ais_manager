@@ -3,7 +3,6 @@
 use std::{sync::Arc, time::Duration};
 
 use artisan_middleware::dusa_collection_utils::log::LogLevel;
-use artisan_middleware::state_persistence::AppState;
 use artisan_middleware::{
     control::ToggleControl,
     dusa_collection_utils::{errors::ErrorArrayItem, rwarc::LockWithTimeout},
@@ -36,7 +35,7 @@ pub struct PortalState {
     portal_addrs: Vec<PortalAddr>,
     portal_identy: Option<Identifier>,
     portal_linked: bool,
-    portal_intime: bool,
+    // portal_intime: bool,
 }
 
 impl PortalState {
@@ -46,7 +45,7 @@ impl PortalState {
             portal_addrs: vec![],
             portal_identy: None,
             portal_linked: false,
-            portal_intime: false, // need a methode of tracking portal comms
+            // portal_intime: false, // need a methode of tracking portal comms
         }
     }
 
@@ -117,6 +116,7 @@ impl Controls {
         }
     }
 
+    #[allow(dead_code)]
     pub async fn wait_for_network_control(&self) {
         self.communication_lock.wait_if_paused().await;
     }
