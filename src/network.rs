@@ -200,6 +200,8 @@ async fn command_processor(
                 }
             }
 
+            drop(store_lock);
+
             return Ok(AppMessage::Response(CommandResponse {
                 app_id: app_id.clone(),
                 command_type: CommandType::Status,
@@ -215,7 +217,7 @@ async fn command_processor(
             let mut status_vec = Vec::new();
 
             for (id, status) in store_lock.iter() {
-                log!(LogLevel::Info, "Sending status of: {}", id);
+                log!(LogLevel::Debug, "Sending status of: {}", id);
                 status_vec.push(status.clone().to_json().unwrap());
             }
 
@@ -232,12 +234,16 @@ async fn command_processor(
                 success: true,
                 message: Some(format!("[{}]", data).replace(",]", "]")),
             });
+
+            drop(store_lock);
+
             return Ok(response_data);
         }
+
         _ => {
             return Ok(AppMessage::Response(CommandResponse {
                 app_id,
-                command_type: CommandType::Status,
+                command_type: CommandType::Custom("command not found".to_string()),
                 success: false,
                 message: Some("Request not implemented".into()),
             }))

@@ -59,7 +59,6 @@ async fn portal_discovery(stream: &mut TcpStream) -> Result<(), ErrorArrayItem> 
         Ok(response) => match response {
             Ok(message) => match message.get_payload().await {
                 PortalMessage::IdRequest => {
-                    PortalState::portal_found(PORTAL_CONTROLS.clone()).await?;
                     handle_identity_request(stream).await
                 }
                 _ => Err(ErrorArrayItem::new(
@@ -72,17 +71,28 @@ async fn portal_discovery(stream: &mut TcpStream) -> Result<(), ErrorArrayItem> 
                 format!("Error during Discover: {}", status),
             )),
         },
-        Err(err) => Err(ErrorArrayItem::from(err)),
+        Err(err) => {
+            let mut a_err = ErrorArrayItem::from(err);
+            let msg = a_err.err_mesg.clone();
+            a_err.err_mesg = format!("Response from server: {}", msg).into();
+            Err(a_err)
+        },
     }
 }
 
 async fn handle_identity_request(stream: &mut TcpStream) -> Result<(), ErrorArrayItem> {
     let id: Option<Identifier> = load_identifier().await;
-    let identity: PortalMessage = PortalMessage::IdResponse(id);
+    let identity: PortalMessage = PortalMessage::IdResponse(id.clone());
+
+    let flags = if id.is_some() {
+        Flags::COMPRESSED | Flags::ENCRYPTED
+    } else {
+        Flags::NONE
+    };
 
     match send_message::<TcpStream, PortalMessage, PortalMessage>(
         stream,
-        Flags::COMPRESSED | Flags::ENCRYPTED,
+        flags,
         identity,
         Proto::TCP,
         true,
@@ -146,8 +156,8 @@ async fn handle_identity_response(
 async fn load_identifier() -> Option<Identifier> {
     match Identifier::load_from_file() {
         Ok(data) => Some(data),
-        Err(err) => {
-            log!(LogLevel::Error, "Failed to load identity: {}", err);
+        Err(_) => {
+            log!(LogLevel::Warn, "System has no identity!");
             None
         }
     }
@@ -257,7 +267,7 @@ pub async fn connect_with_portal(config: &AppConfig) -> Result<(), ErrorArrayIte
         if let Err(err) = portal_discovery(&mut stream).await {
             log!(LogLevel::Error, "Failed to exchange identities with portal @ {} -> {}", portal_conn, err);
         } else {
-            log!(LogLevel::Debug, "Discovered: {} !", portal_conn);
+            log!(LogLevel::Debug, "Discovered @ {} !", portal_conn);
         }
 
         let mut stream: TcpStream = match establish_portal_connection(&portal_conn).await {
@@ -272,7 +282,7 @@ pub async fn connect_with_portal(config: &AppConfig) -> Result<(), ErrorArrayIte
             if let Err(err) = portal_registration(&mut stream, id).await {
                 log!(LogLevel::Error, "Failed to register with portal @ {} -> {}", portal_conn, err);
             } else {
-                log!(LogLevel::Debug, "Registered with portal {} !", portal_conn);
+                log!(LogLevel::Debug, "Registered with portal @ {} !", portal_conn);
                 PortalState::portal_linked(PORTAL_CONTROLS.clone()).await?;
             }
         }

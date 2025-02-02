@@ -1,8 +1,8 @@
-use artisan_middleware::aggregator::{AppStatus, Status};
+use artisan_middleware::aggregator::{AppStatus, Metrics, Status};
+use artisan_middleware::dusa_collection_utils::errors::Errors;
 use artisan_middleware::dusa_collection_utils::functions::current_timestamp;
 use artisan_middleware::dusa_collection_utils::log;
 use artisan_middleware::dusa_collection_utils::stringy::Stringy;
-use artisan_middleware::dusa_collection_utils::types::PathType;
 use artisan_middleware::dusa_collection_utils::{
     errors::ErrorArrayItem, log::LogLevel, rwarc::LockWithTimeout,
 };
@@ -10,22 +10,27 @@ use artisan_middleware::state_persistence::AppState;
 use std::collections::{HashMap, HashSet};
 
 use crate::applications::child::{
-    spawn_single_application, CLIENT_APPLICATION_HANDLER, SYSTEM_APPLICATION_HANDLER,
+    CLIENT_APPLICATION_ARRAY, CLIENT_APPLICATION_HANDLER, SYSTEM_APPLICATION_HANDLER,
 };
 use crate::applications::resolve::{
- resolve_system_applications, Application, SystemApplication,
+    resolve_client_applications, resolve_system_applications, SystemApplication,
 };
 
-use super::child::{
-    populate_initial_state_lock, SupervisedProcesses, APP_STATUS_ARRAY, SYSTEM_APPLICATION_ARRAY
-};
+use super::child::{SupervisedProcesses, APP_STATUS_ARRAY, SYSTEM_APPLICATION_ARRAY};
+use super::pid::reclaim_child;
+use super::resolve::ClientApplication;
 
 pub async fn monitor_application_resource_usage(
     handler: LockWithTimeout<HashMap<String, SupervisedProcesses>>,
 ) -> Result<(), ErrorArrayItem> {
     let application_handler_read_lock = handler.try_read().await?;
 
-    for (_, app) in application_handler_read_lock.iter() {
+    let mut app_status_array_write_lock: tokio::sync::RwLockWriteGuard<
+        '_,
+        std::collections::HashMap<Stringy, artisan_middleware::aggregator::AppStatus>,
+    > = APP_STATUS_ARRAY.try_write().await?;
+
+    for (name, app) in application_handler_read_lock.iter() {
         match app {
             SupervisedProcesses::Child(supervised_child) => {
                 // cheap fix
@@ -50,6 +55,15 @@ pub async fn monitor_application_resource_usage(
                         );
                         monitor_lock.cpu = usage.0;
                         monitor_lock.ram = usage.1;
+
+                        if let Some(app_arr_val) = app_status_array_write_lock.get_mut(&name.into())
+                        {
+                            app_arr_val.metrics = Some(Metrics {
+                                cpu_usage: usage.0,
+                                memory_usage: usage.1,
+                                other: None,
+                            })
+                        }
                     }
                     Err(err) => {
                         log!(LogLevel::Error, "Error locking monitor: {}", err);
@@ -79,6 +93,15 @@ pub async fn monitor_application_resource_usage(
                         );
                         monitor_lock.cpu = usage.0;
                         monitor_lock.ram = usage.1;
+
+                        if let Some(app_arr_val) = app_status_array_write_lock.get_mut(&name.into())
+                        {
+                            app_arr_val.metrics = Some(Metrics {
+                                cpu_usage: usage.0,
+                                memory_usage: usage.1,
+                                other: None,
+                            })
+                        }
                     }
                     Err(err) => {
                         log!(LogLevel::Error, "Error locking monitor: {}", err);
@@ -88,24 +111,10 @@ pub async fn monitor_application_resource_usage(
             }
         };
     }
+
     Ok(())
 }
 
-pub async fn track_application_uptime() -> Result<(), ErrorArrayItem> {
-    let mut app_status_array_write_lock: tokio::sync::RwLockWriteGuard<
-        '_,
-        std::collections::HashMap<Stringy, artisan_middleware::aggregator::AppStatus>,
-    > = APP_STATUS_ARRAY.try_write().await?;
-
-    for app in app_status_array_write_lock.iter_mut() {
-        // simple house keeping tasks
-        calculate_uptime(app.1);
-        update_self(app.1);
-        check_balances(app.1);
-    }
-
-    return Ok(());
-}
 
 pub async fn handle_dead_applications() -> Result<(), ErrorArrayItem> {
     let mut app_status_array_write_lock: tokio::sync::RwLockWriteGuard<
@@ -193,7 +202,7 @@ pub async fn handle_dead_applications() -> Result<(), ErrorArrayItem> {
                         client_application_status.uptime = None;
 
                         // put in to be removed set
-                        system_handler_to_remove.insert(client_application_status.app_id.clone());
+                        client_handler_to_remove.insert(client_application_status.app_id.clone());
 
                         // Dropping the monitor
                         supervised_process.terminate_monitor();
@@ -220,17 +229,14 @@ pub async fn handle_dead_applications() -> Result<(), ErrorArrayItem> {
     Ok(())
 }
 
-pub async fn handle_new_system_applications(
-    mut state: &mut AppState,
-    state_path: &PathType,
-) -> Result<(), ErrorArrayItem> {
+pub async fn handle_new_system_applications() -> Result<(), ErrorArrayItem> {
     // resolve current applications
     resolve_system_applications().await?;
 
-    let system_handler_read_lock: tokio::sync::RwLockReadGuard<
+    let mut system_handler_write_lock: tokio::sync::RwLockWriteGuard<
         '_,
         HashMap<String, SupervisedProcesses>,
-    > = SYSTEM_APPLICATION_HANDLER.try_read().await?;
+    > = SYSTEM_APPLICATION_HANDLER.try_write().await?;
 
     let system_application_read_lock: tokio::sync::RwLockReadGuard<
         '_,
@@ -240,76 +246,239 @@ pub async fn handle_new_system_applications(
     let mut system_to_start: HashMap<Stringy, SystemApplication> = HashMap::new();
 
     for new_app in system_application_read_lock.iter() {
-        if !system_handler_read_lock.contains_key(new_app.0) {
+        if !system_handler_write_lock.contains_key(new_app.0) {
             system_to_start.insert(new_app.0.into(), new_app.1.clone());
         }
     }
 
     drop(system_application_read_lock);
-    drop(system_handler_read_lock);
 
     // Starting the applications.
     // TODO if system apps are started here, they more than likly failed with systemd
     // TODO Send a email or notification to check on this system if apps are running like this
 
     for id in system_to_start {
-        spawn_single_application(Application::System(id.1), &mut state, state_path).await?;
+        // spawn_single_application(Application::System(id.1), &mut state, state_path).await?;
+        // instead of spawning let's just try to reclaim the pid
 
-        // Setting the status for the application
-        populate_initial_state_lock(state).await?;
+        if let Some(app_state) = id.1.state {
+            match reclaim_child(app_state.pid).await {
+                Ok(mut process) => {
+                    process.monitor_usage().await;
 
-        // Ensuring the application is in the handler
-        let system_handler_read_lock = SYSTEM_APPLICATION_HANDLER.try_read().await?;
-        let name: &Stringy = &id.0;
-        if let Some(_) = system_handler_read_lock.get(&name.to_string()) {
-            log!(
-                LogLevel::Info,
-                "{} Started and added to the system handler",
-                name
-            );
+                    // Updating the status array
+                    let mut app_status_array_write_lock: tokio::sync::RwLockWriteGuard<
+                        '_,
+                        HashMap<Stringy, AppStatus>,
+                    > = APP_STATUS_ARRAY.try_write().await?;
+
+                    if let Some(app) = app_status_array_write_lock.get_mut(&id.0) {
+                        app.pid = process.get_pid() as u32;
+                        app.status = app_state.status;
+                        if app.status == Status::Idle {
+                            app.metrics = None;
+                        }
+                    }
+
+                    // Adding to handler
+                    system_handler_write_lock
+                        .insert(id.0.to_string(), SupervisedProcesses::Process(process));
+                    log!(
+                        LogLevel::Info,
+                        "{} Started and added to the system handler",
+                        id.0
+                    );
+                }
+                Err(err) => {
+                    if err.err_type == Errors::SupervisedChild {
+                        log!(LogLevel::Trace, "{} not currently running", id.0);
+                        continue;
+                    } else {
+                        return Err(err);
+                    }
+                }
+            }
         }
     }
 
     Ok(())
 }
 
+pub async fn handle_new_client_applications(state: &mut AppState) -> Result<(), ErrorArrayItem> {
+    // resolve current applications
+    resolve_client_applications(&state.config).await?;
 
-fn calculate_uptime(app: &mut AppStatus) {
-    let is_running: bool = app.status != Status::Unknown
+    let mut client_handler_write_lock: tokio::sync::RwLockWriteGuard<
+        '_,
+        HashMap<String, SupervisedProcesses>,
+    > = CLIENT_APPLICATION_HANDLER.try_write().await?;
+
+    let client_application_read_lock: tokio::sync::RwLockReadGuard<
+        '_,
+        HashMap<String, crate::applications::resolve::ClientApplication>,
+    > = CLIENT_APPLICATION_ARRAY.try_read().await?;
+
+    let mut client_to_start: HashMap<Stringy, ClientApplication> = HashMap::new();
+
+    for new_app in client_application_read_lock.iter() {
+        if !client_handler_write_lock.contains_key(new_app.0) {
+            client_to_start.insert(new_app.0.into(), new_app.1.clone());
+        }
+    }
+
+    drop(client_application_read_lock);
+
+    // Starting the applications.
+    // TODO if system apps are started here, they more than likly failed with systemd
+    // TODO Send a email or notification to check on this system if apps are running like this
+
+    for id in client_to_start {
+        // spawn_single_application(Application::System(id.1), &mut state, state_path).await?;
+        // instead of spawning let's just try to reclaim the pid
+
+        if let Some(app_state) = id.1.state {
+            match reclaim_child(app_state.pid).await {
+                Ok(mut process) => {
+                    process.monitor_usage().await;
+
+                    // Updating the status array
+                    let mut app_status_array_write_lock: tokio::sync::RwLockWriteGuard<
+                        '_,
+                        HashMap<Stringy, AppStatus>,
+                    > = APP_STATUS_ARRAY.try_write().await?;
+
+                    if let Some(app) = app_status_array_write_lock.get_mut(&id.0) {
+                        app.pid = process.get_pid() as u32;
+                        app.status = app_state.status;
+                    }
+
+                    // Adding to handler
+                    client_handler_write_lock
+                        .insert(id.0.to_string(), SupervisedProcesses::Process(process));
+                    log!(
+                        LogLevel::Info,
+                        "{} Started and added to the system handler",
+                        id.0
+                    );
+                }
+                Err(err) => {
+                    if err.err_type == Errors::SupervisedChild {
+                        log!(LogLevel::Trace, "{} not currently running", id.0);
+                        continue;
+                    } else {
+                        return Err(err);
+                    }
+                }
+            }
+        }
+    }
+
+    Ok(())
+}
+
+pub async fn update_client_state(
+    state: &mut AppState,
+) -> Result<(), ErrorArrayItem> {
+    // Updating state files for system applications
+    resolve_client_applications(&state.clone().config).await?;
+
+    let mut application_status_array_write_lock: tokio::sync::RwLockWriteGuard<
+        '_,
+        HashMap<Stringy, AppStatus>,
+    > = APP_STATUS_ARRAY.try_write().await?;
+
+    let client_application_array_read_lock: tokio::sync::RwLockReadGuard<
+        '_,
+        HashMap<String, crate::applications::resolve::ClientApplication>,
+    > = CLIENT_APPLICATION_ARRAY.try_read().await?;
+
+    for mut_client_status in application_status_array_write_lock.iter_mut() {
+        if let Some(new_client_state) =
+            client_application_array_read_lock.get(&mut_client_status.0.to_string())
+        {
+            if let Some(state) = &new_client_state.state {
+                mut_client_status.1.status = state.status;
+                if !state.error_log.is_empty() {
+                    mut_client_status.1.error = Some(state.error_log.clone())
+                } else {
+                    mut_client_status.1.error = None
+                }
+
+                calculate_uptime(mut_client_status.1, state);
+            }
+        }
+    }
+
+    Ok(())
+}
+
+pub async fn update_system_state(
+) -> Result<(), ErrorArrayItem> {
+    // Updating state files for system applications
+    resolve_system_applications().await?;
+
+    let mut application_status_array_write_lock: tokio::sync::RwLockWriteGuard<
+        '_,
+        HashMap<Stringy, AppStatus>,
+    > = APP_STATUS_ARRAY.try_write().await?;
+
+    let system_application_array_read_lock: tokio::sync::RwLockReadGuard<
+        '_,
+        HashMap<String, crate::applications::resolve::SystemApplication>,
+    > = SYSTEM_APPLICATION_ARRAY.try_read().await?;
+
+    for mut_system_status in application_status_array_write_lock.iter_mut() {
+        
+        if let Some(new_client_state) =
+            system_application_array_read_lock.get(&mut_system_status.0.to_string())
+        {
+            if let Some(state) = &new_client_state.state {
+                mut_system_status.1.status = state.status;
+                if !state.error_log.is_empty() {
+                    mut_system_status.1.error = Some(state.error_log.clone())
+                } else {
+                    mut_system_status.1.error = None
+                }
+
+                calculate_uptime(mut_system_status.1, state);
+            }
+        }
+    }
+
+    Ok(())
+}
+
+fn calculate_uptime(app: &mut AppStatus, state: &AppState) {
+    check_balances(app);
+    let timedout = state.last_updated <= (current_timestamp() - 30);
+
+    if timedout {
+        app.status = Status::Unknown;
+        app.metrics = None;
+    }
+
+    let running: bool = app.status != Status::Unknown
         && app.status != Status::Stopping
         && app.status != Status::Stopped;
 
-    if is_running {
-        app.uptime = Some(current_timestamp() - app.timestamp);
-    } else {
+    if !running {
         app.uptime = None;
-        app.metrics = None;
-        app.timestamp = current_timestamp();
     }
-}
 
-fn update_self(app: &mut AppStatus) {
-    if app.app_id == Stringy::from("ais_manager") {
-        app.status = Status::Idle;
-        // app.metrics = None;
+    if running && !timedout {
+        app.uptime = Some(current_timestamp() - app.timestamp);
     }
 }
 
 fn check_balances(app: &mut AppStatus) {
-    // Set to running if we are recieving metric data
-    // if let Some(_) = app.metrics {
-    // app.status = Status::Running;
-    // }
-
     // Set warning if we have errors
-    if app.status == Status::Running && app.error.is_some() {
-        app.status = Status::Warning;
+    if app.status == Status::Stopped {
+        app.timestamp = current_timestamp();
+        app.uptime = None;
     }
 
-    // ? If an app is in the idle state, we just monitor it's uptime, we don't track errors or metrics
-    if app.status == Status::Idle {
-        app.metrics = None;
-        app.error = None;
+    if app.status == Status::Running && app.error.is_some() {
+        app.status = Status::Warning;
     }
 
     // clearing data for unknown
@@ -320,20 +489,3 @@ fn check_balances(app: &mut AppStatus) {
     }
 }
 
-// pub async fn monitor_client_applications(client_handler: LockWithTimeout<HashMap<String, SupervisedProcesses>>) -> Result<(), ErrorArrayItem> {
-//     let client_application_handler_read_lock
-//     = client_handler.try_read().await?;
-
-//     for (key, client_app) in client_application_handler_read_lock.iter() {
-//         let key = key.clone(); // Clone the key (or data needed for logging) into the closure
-//         let client_app = client_app.clone(); // Clone client_app if it's clonable or move if it owns its data
-
-//         tokio::spawn(async move {
-//             log!(LogLevel::Info, "monitoring: {}", key);
-//             let resource: ResourceMonitorLock = client_app.monitor;
-//             resource.monitor(2).await;
-//         });
-//     }
-
-//     Ok(())
-// }

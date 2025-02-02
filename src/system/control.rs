@@ -2,7 +2,14 @@
 
 use std::{sync::Arc, time::Duration};
 
+use crate::applications::child::{
+    populate_initial_state_lock, APP_STATUS_ARRAY, CLIENT_APPLICATION_HANDLER,
+    SYSTEM_APPLICATION_HANDLER,
+};
+use crate::applications::resolve::{resolve_client_applications, resolve_system_applications};
+use artisan_middleware::config::AppConfig;
 use artisan_middleware::dusa_collection_utils::log::LogLevel;
+use artisan_middleware::state_persistence::AppState;
 use artisan_middleware::{
     control::ToggleControl,
     dusa_collection_utils::{errors::ErrorArrayItem, rwarc::LockWithTimeout},
@@ -10,7 +17,6 @@ use artisan_middleware::{
 use artisan_middleware::{dusa_collection_utils::log, identity::Identifier};
 use once_cell::sync::Lazy;
 use tokio::sync::Notify;
-use crate::applications::child::{APP_STATUS_ARRAY, CLIENT_APPLICATION_HANDLER, SYSTEM_APPLICATION_HANDLER};
 
 use super::portal::PortalAddr;
 
@@ -78,15 +84,8 @@ impl PortalState {
     ) -> Result<(), ErrorArrayItem> {
         let mut portal_state_write_lock = portal_controls.try_write().await?;
         portal_state_write_lock.portal_addrs = portals;
-        drop(portal_state_write_lock);
-        Ok(())
-    }
-
-    pub async fn portal_found(
-        portal_controls: LockWithTimeout<Self>,
-    ) -> Result<(), ErrorArrayItem> {
-        let mut portal_state_write_lock = portal_controls.try_write().await?;
         portal_state_write_lock.portal_found = true;
+        drop(portal_state_write_lock);
         Ok(())
     }
 
@@ -154,7 +153,7 @@ impl Controls {
         !self.communication_lock.is_paused().await && !self.status_lock.is_paused().await
     }
 
-    pub fn start_contol_monitor(self: Arc<Self>) {
+    pub fn start_contol_monitor(self: Arc<Self>, config: AppConfig, mut state: AppState) {
         tokio::spawn(async move {
             loop {
                 tokio::select! {
@@ -185,7 +184,7 @@ impl Controls {
                                 log!(LogLevel::Error, "Failed to lock system handler, dumping: {}", err);
                             },
                         };
-                        
+
                         match applications.try_write().await {
                             Ok(mut apps) => {
                                 apps.clear();
@@ -195,16 +194,37 @@ impl Controls {
                                 log!(LogLevel::Error, "Failed to lock application array, dumping: {}", err);
                             },
                         };
-                        
+
+
                         // Refilling the locks and vecs
 
+                        if let Err(err) = resolve_system_applications().await {
+                            log!(
+                                LogLevel::Error,
+                                "Failed to resolve system applications: {}",
+                                err
+                            );
+                            self.signal_shutdown();
+                        };
+
+                        if let Err(err) = resolve_client_applications(&config).await {
+                            log!(
+                                LogLevel::Error,
+                                "Failed to resolve client applications, running in safe mode: {}",
+                                err
+                            );
+                            state.config.debug_mode = true;
+                            state.config.environment = "systemonly".to_string();
+                        }
+
+                        if let Err(err) = populate_initial_state_lock(&mut state).await {
+                            log!(LogLevel::Error, "{}", err);
+                        }
 
                         self.resume_all_controls().await;
                     }
 
                     _ = self.shutdown_notify.notified() => {
-                        self.pause_all_controls().await;
-
                         std::process::exit(0)
                     }
                 }

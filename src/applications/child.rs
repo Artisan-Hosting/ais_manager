@@ -42,7 +42,7 @@ pub static CLIENT_APPLICATION_ARRAY: Lazy<LockWithTimeout<HashMap<String, Client
 pub static SYSTEM_APPLICATION_ARRAY: Lazy<LockWithTimeout<HashMap<String, SystemApplication>>> =
     Lazy::new(|| LockWithTimeout::new(HashMap::new()));
 
-pub async fn spawn_system_applications(
+pub async fn _spawn_system_applications(
     system_application_handler: LockWithTimeout<HashMap<String, SupervisedProcesses>>,
     system_application_array: LockWithTimeout<HashMap<String, SystemApplication>>,
     state: &mut AppState,
@@ -150,8 +150,7 @@ pub async fn spawn_system_applications(
     Ok(())
 }
 
-// TODO add pid tracking to assume control of running instances
-pub async fn spawn_client_applications(
+pub async fn _spawn_client_applications(
     client_application_handler: LockWithTimeout<HashMap<String, SupervisedProcesses>>,
     client_application_array: LockWithTimeout<HashMap<String, ClientApplication>>,
     state: &mut AppState,
@@ -555,7 +554,7 @@ pub async fn populate_initial_state_lock(state: &mut AppState) -> Result<(), Err
             Some(state) => AppStatus {
                 pid: state.pid,
                 app_id: Stringy::from(&state.name),
-                uptime: None,
+                uptime: Some(current_timestamp() - state.last_updated),
                 error: if !state.error_log.is_empty() {
                     Some(state.error_log)
                 } else {

@@ -248,8 +248,7 @@ pub async fn resolve_client_applications(config: &AppConfig) -> Result<(), Error
                 let encrypted_content: Option<Vec<u8>> =
                     match fs::read_to_string(application_env_path).map_err(ErrorArrayItem::from) {
                         Ok(data) => Some(data.as_bytes().to_vec()),
-                        Err(err) => {
-                            log!(LogLevel::Error, "{}", err);
+                        Err(_) => {
                             None
                         }
                     };

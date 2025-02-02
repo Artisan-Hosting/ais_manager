@@ -1,7 +1,7 @@
 # Overrides for the default config from the lib
 
 debug_mode = false
-log_level = "Trace"
+log_level = "Info"
 #environment = "systemonly"
 
 [git]
