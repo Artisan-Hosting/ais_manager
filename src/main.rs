@@ -67,7 +67,7 @@ async fn main() -> Result<(), ErrorArrayItem> {
     application_controls.start_signal_monitors();
     application_controls
         .clone()
-        .start_contol_monitor(config.clone(), state.clone());
+        .start_contol_monitor();
 
     // Update metrics
     let mut state_clone = state.clone();

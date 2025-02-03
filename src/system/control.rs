@@ -2,14 +2,9 @@
 
 use std::{sync::Arc, time::Duration};
 
-use crate::applications::child::{
-    populate_initial_state_lock, APP_STATUS_ARRAY, CLIENT_APPLICATION_HANDLER,
-    SYSTEM_APPLICATION_HANDLER,
-};
-use crate::applications::resolve::{resolve_client_applications, resolve_system_applications};
-use artisan_middleware::config::AppConfig;
+use crate::applications::child::{APP_STATUS_ARRAY, CLIENT_APPLICATION_HANDLER, SYSTEM_APPLICATION_HANDLER};
+use artisan_middleware::aggregator::{save_registered_apps, AppStatus};
 use artisan_middleware::dusa_collection_utils::log::LogLevel;
-use artisan_middleware::state_persistence::AppState;
 use artisan_middleware::{
     control::ToggleControl,
     dusa_collection_utils::{errors::ErrorArrayItem, rwarc::LockWithTimeout},
@@ -17,6 +12,7 @@ use artisan_middleware::{
 use artisan_middleware::{dusa_collection_utils::log, identity::Identifier};
 use once_cell::sync::Lazy;
 use tokio::sync::Notify;
+use tokio::time::sleep;
 
 use super::portal::PortalAddr;
 
@@ -131,10 +127,6 @@ impl Controls {
         self.reload_notify.notify_one();
     }
 
-    pub fn signal_shutdown(&self) {
-        self.shutdown_notify.notify_one();
-    }
-
     /// Pauses all controls and ensures they are in a paused state.
     pub async fn pause_all_controls(&self) -> bool {
         self.communication_lock.wait_if_paused().await;
@@ -153,7 +145,7 @@ impl Controls {
         !self.communication_lock.is_paused().await && !self.status_lock.is_paused().await
     }
 
-    pub fn start_contol_monitor(self: Arc<Self>, config: AppConfig, mut state: AppState) {
+    pub fn start_contol_monitor(self: Arc<Self>) {
         tokio::spawn(async move {
             loop {
                 tokio::select! {
@@ -163,7 +155,6 @@ impl Controls {
                         // Clearning the handlers
                         let client_handler = &CLIENT_APPLICATION_HANDLER.clone();
                         let system_handler = &SYSTEM_APPLICATION_HANDLER.clone();
-                        let applications = &APP_STATUS_ARRAY.clone();
 
                         match client_handler.try_write().await {
                             Ok(mut clients) => {
@@ -185,47 +176,74 @@ impl Controls {
                             },
                         };
 
-                        match applications.try_write().await {
-                            Ok(mut apps) => {
-                                apps.clear();
-                                apps.shrink_to_fit();
-                            },
-                            Err(err) => {
-                                log!(LogLevel::Error, "Failed to lock application array, dumping: {}", err);
-                            },
-                        };
-
-
-                        // Refilling the locks and vecs
-
-                        if let Err(err) = resolve_system_applications().await {
-                            log!(
-                                LogLevel::Error,
-                                "Failed to resolve system applications: {}",
-                                err
-                            );
-                            self.signal_shutdown();
-                        };
-
-                        if let Err(err) = resolve_client_applications(&config).await {
-                            log!(
-                                LogLevel::Error,
-                                "Failed to resolve client applications, running in safe mode: {}",
-                                err
-                            );
-                            state.config.debug_mode = true;
-                            state.config.environment = "systemonly".to_string();
-                        }
-
-                        if let Err(err) = populate_initial_state_lock(&mut state).await {
-                            log!(LogLevel::Error, "{}", err);
-                        }
-
                         self.resume_all_controls().await;
                     }
 
                     _ = self.shutdown_notify.notified() => {
+                        log!(LogLevel::Info, "Shutting down gracefully");
+                        sleep(Duration::from_millis(200)).await;
+
+                        self.pause_all_controls().await;
+
+                        // Clearning the handlers
+                        let client_handler = &CLIENT_APPLICATION_HANDLER.clone();
+                        let system_handler = &SYSTEM_APPLICATION_HANDLER.clone();
+
+                        match client_handler.try_write().await {
+                            Ok(mut clients) => {
+                                clients.clear();
+                                clients.shrink_to_fit();
+                            },
+                            Err(err) => {
+                                log!(LogLevel::Error, "Failed to lock client handler, dumping: {}", err);
+                            },
+                        };
+
+                        match system_handler.try_write().await {
+                            Ok(mut systems) => {
+                                systems.clear();
+                                systems.shrink_to_fit();
+                            },
+                            Err(err) => {
+                                log!(LogLevel::Error, "Failed to lock system handler, dumping: {}", err);
+                            },
+                        };
+
+                        // saving the system array to disk
+                        let app_status_array_read_lock = match APP_STATUS_ARRAY.try_read().await {
+                            Ok(arr) => arr,
+                            Err(err) => {
+                                log!(LogLevel::Error, "{}", err);
+                                continue;
+                            }
+                        };
+        
+                        let mut app_array: Vec<AppStatus> = Vec::new();
+        
+                        app_status_array_read_lock
+                            .clone()
+                            .into_iter()
+                            .for_each(|app| {
+                                app_array.push(app.1);
+                            });
+        
+                        for app in app_array.clone() {
+                            log!(LogLevel::Debug, "Status: {}", app);
+                        }
+        
+                        if let Err(err) = save_registered_apps(&app_array).await {
+                            log!(LogLevel::Error, "{}", err);
+                            std::process::exit(1)
+                        }
+                        
+                        log!(LogLevel::Info, "Bye~");
                         std::process::exit(0)
+                    }
+
+                    _ = tokio::signal::ctrl_c() => {
+                        print!("\n"); // pretty in the terminal
+                        log!(LogLevel::Info, "CTRL + C recieved");
+                        self.shutdown_notify.notify_one();
                     }
                 }
             }

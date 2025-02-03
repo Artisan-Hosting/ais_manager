@@ -6,6 +6,7 @@ use artisan_middleware::dusa_collection_utils::stringy::Stringy;
 use artisan_middleware::dusa_collection_utils::{
     errors::ErrorArrayItem, log::LogLevel, rwarc::LockWithTimeout,
 };
+use artisan_middleware::process_manager::is_pid_active;
 use artisan_middleware::state_persistence::AppState;
 use std::collections::{HashMap, HashSet};
 
@@ -148,6 +149,7 @@ pub async fn handle_dead_applications() -> Result<(), ErrorArrayItem> {
                         system_application_status.status = Status::Stopped;
                         system_application_status.metrics = None;
                         system_application_status.uptime = None;
+                        system_application_status.timestamp = current_timestamp();
 
                         // put in to be removed set
                         system_handler_to_remove.insert(system_application_status.app_id.clone());
@@ -162,6 +164,7 @@ pub async fn handle_dead_applications() -> Result<(), ErrorArrayItem> {
                         system_application_status.status = Status::Stopped;
                         system_application_status.metrics = None;
                         system_application_status.uptime = None;
+                        system_application_status.timestamp = current_timestamp();
 
                         // put in to be removed set
                         system_handler_to_remove.insert(system_application_status.app_id.clone());
@@ -186,6 +189,8 @@ pub async fn handle_dead_applications() -> Result<(), ErrorArrayItem> {
                         client_application_status.status = Status::Stopped;
                         client_application_status.metrics = None;
                         client_application_status.uptime = None;
+                        client_application_status.timestamp = current_timestamp();
+
 
                         // put in to be removed set
                         client_handler_to_remove.insert(client_application_status.app_id.clone());
@@ -200,6 +205,7 @@ pub async fn handle_dead_applications() -> Result<(), ErrorArrayItem> {
                         client_application_status.status = Status::Stopped;
                         client_application_status.metrics = None;
                         client_application_status.uptime = None;
+                        client_application_status.timestamp = current_timestamp();
 
                         // put in to be removed set
                         client_handler_to_remove.insert(client_application_status.app_id.clone());
@@ -357,7 +363,7 @@ pub async fn handle_new_client_applications(state: &mut AppState) -> Result<(), 
                         .insert(id.0.to_string(), SupervisedProcesses::Process(process));
                     log!(
                         LogLevel::Info,
-                        "{} Started and added to the system handler",
+                        "{} Started and added to the client handler",
                         id.0
                     );
                 }
@@ -404,6 +410,11 @@ pub async fn update_client_state(
                     mut_client_status.1.error = None
                 }
 
+                if !is_pid_active(state.pid as i32).map_err(ErrorArrayItem::from)? {
+                    mut_client_status.1.error = None;
+                    mut_client_status.1.status = Status::Stopped;
+                }
+
                 calculate_uptime(mut_client_status.1, state);
             }
         }
@@ -438,6 +449,11 @@ pub async fn update_system_state(
                     mut_system_status.1.error = Some(state.error_log.clone())
                 } else {
                     mut_system_status.1.error = None
+                }
+
+                if !is_pid_active(state.pid as i32).map_err(ErrorArrayItem::from)? {
+                    mut_system_status.1.error = None;
+                    mut_system_status.1.status = Status::Stopped;
                 }
 
                 calculate_uptime(mut_system_status.1, state);
@@ -482,10 +498,14 @@ fn check_balances(app: &mut AppStatus) {
     }
 
     // clearing data for unknown
-    if app.status == Status::Unknown {
+    if app.status == Status::Unknown || app.status == Status::Stopped {
         app.metrics = None;
         app.error = None;
         app.timestamp = current_timestamp();
+    }
+
+    if app.status == Status::Stopping {
+        app.status = Status::Stopped
     }
 }
 
