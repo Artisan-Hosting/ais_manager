@@ -64,6 +64,15 @@ pub async fn generate_state(config: &AppConfig) -> AppState {
             loaded_data.config.log_level = config.log_level;
             loaded_data.config.aggregator = config.aggregator.clone();
             loaded_data.config.environment = config.environment.clone();
+            loaded_data.version = {
+                let library_version: Version = aml_version();
+                let software_version: Version = str_to_version(env!("CARGO_PKG_VERSION"), Some(VersionCode::Production));
+                
+                SoftwareVersion {
+                    application: software_version,
+                    library: library_version,
+                }
+            };
             loaded_data.pid = std::process::id();
             set_log_level(loaded_data.config.log_level);
             loaded_data.event_counter = 0;

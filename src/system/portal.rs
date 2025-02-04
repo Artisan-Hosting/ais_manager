@@ -208,7 +208,8 @@ async fn portal_registration(
 
     match send_message::<TcpStream, PortalMessage, PortalMessage>(
         &mut stream,
-        Flags::COMPRESSED | Flags::ENCRYPTED,
+        // Flags::COMPRESSED | Flags::ENCRYPTED,
+        Flags::NONE,   // TODO send this encrypted
         message,
         Proto::TCP,
         false,
