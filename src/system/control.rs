@@ -60,7 +60,7 @@ impl PortalState {
         Ok(())
     }
 
-    pub async fn get_identity(
+    pub async fn _get_identity(
         portal_controls: LockWithTimeout<Self>,
     ) -> Result<Option<Identifier>, ErrorArrayItem> {
         let portal_state_read_lock = portal_controls.try_read().await?;

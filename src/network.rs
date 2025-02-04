@@ -1,14 +1,12 @@
 use std::{net::SocketAddr, sync::Arc, time::Duration};
-
+use gethostname::gethostname;
 use artisan_middleware::{
-    aggregator::{AppMessage, Command, CommandResponse, CommandType},
-    config::AppConfig,
-    state_persistence::AppState,
+    aggregator::{AppMessage, Command, CommandResponse, CommandType}, config::AppConfig, dusa_collection_utils::{errors::Errors, functions::current_timestamp}, git_actions::GitCredentials, identity, portal::ManagerData, state_persistence::AppState
 };
 use artisan_middleware::dusa_collection_utils::{errors::ErrorArrayItem, log, types::PathType};
 use artisan_middleware::dusa_collection_utils::{log::LogLevel, stringy::Stringy};
 use simple_comms::{
-    network::send_receive::{send_data, send_empty_err},
+    network::{send_receive::{send_data, send_empty_err}, utils::get_local_ip},
     protocol::{
         flags::Flags, header::EOL, io_helpers::read_until, message::ProtocolMessage, proto::Proto,
     },
@@ -17,10 +15,10 @@ use tokio::net::TcpStream;
 
 use crate::{
     applications::{
-        child::APP_STATUS_ARRAY,
+        child::{APP_STATUS_ARRAY, CLIENT_APPLICATION_ARRAY, SYSTEM_APPLICATION_ARRAY},
         start_stop::{reload_application, start_application, stop_application},
     },
-    system::control::Controls,
+    system::{control::Controls, manager::get_manager_data, portal::load_identifier},
 };
 
 pub async fn process_tcp(
@@ -238,6 +236,11 @@ async fn command_processor(
             drop(store_lock);
 
             return Ok(response_data);
+        }
+
+        artisan_middleware::aggregator::CommandType::Info => {
+            let manager_data: ManagerData = get_manager_data(state).await?;
+            return Ok(AppMessage::ManagerInfo(manager_data));
         }
 
         _ => {

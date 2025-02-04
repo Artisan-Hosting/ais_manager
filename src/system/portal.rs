@@ -1,18 +1,18 @@
+use artisan_middleware::dusa_collection_utils::log;
 use artisan_middleware::{
     config::AppConfig,
-    dusa_collection_utils::errors::{ErrorArrayItem, Errors},
-    dusa_collection_utils::log,
-    dusa_collection_utils::log::LogLevel,
+    dusa_collection_utils::{
+        errors::{ErrorArrayItem, Errors},
+        log::LogLevel,
+    },
     identity::Identifier,
     network::resolve_url,
-    portal::PortalMessage,
+    portal::{ManagerData, PortalMessage},
+    state_persistence::AppState,
 };
 use colored::Colorize;
 use simple_comms::{
-    network::{
-        send_receive::{send_empty_ok, send_message},
-        utils::get_local_ip,
-    },
+    network::send_receive::{send_empty_ok, send_message},
     protocol::{flags::Flags, proto::Proto},
 };
 use std::{
@@ -21,7 +21,10 @@ use std::{
 };
 use tokio::net::TcpStream;
 
-use super::control::{PortalState, PORTAL_CONTROLS};
+use super::{
+    control::{PortalState, PORTAL_CONTROLS},
+    manager::get_manager_data,
+};
 
 #[allow(dead_code)]
 #[derive(Clone, Debug)]
@@ -58,9 +61,7 @@ async fn portal_discovery(stream: &mut TcpStream) -> Result<(), ErrorArrayItem> 
     {
         Ok(response) => match response {
             Ok(message) => match message.get_payload().await {
-                PortalMessage::IdRequest => {
-                    handle_identity_request(stream).await
-                }
+                PortalMessage::IdRequest => handle_identity_request(stream).await,
                 _ => Err(ErrorArrayItem::new(
                     Errors::AuthenticationError,
                     "Unexpected response to Discover".to_string(),
@@ -76,7 +77,7 @@ async fn portal_discovery(stream: &mut TcpStream) -> Result<(), ErrorArrayItem> 
             let msg = a_err.err_mesg.clone();
             a_err.err_mesg = format!("Response from server: {}", msg).into();
             Err(a_err)
-        },
+        }
     }
 }
 
@@ -153,7 +154,7 @@ async fn handle_identity_response(
     }
 }
 
-async fn load_identifier() -> Option<Identifier> {
+pub async fn load_identifier() -> Option<Identifier> {
     match Identifier::load_from_file() {
         Ok(data) => Some(data),
         Err(_) => {
@@ -201,11 +202,9 @@ async fn get_portal_addr(config: &AppConfig) -> Result<(), ErrorArrayItem> {
 
 async fn portal_registration(
     mut stream: &mut TcpStream,
-    client: Identifier,
+    data: ManagerData,
 ) -> Result<(), ErrorArrayItem> {
-    let ip = IpAddr::from(get_local_ip());
-
-    let message = PortalMessage::RegisterRequest(client, ip);
+    let message = PortalMessage::RegisterRequest(data);
 
     match send_message::<TcpStream, PortalMessage, PortalMessage>(
         &mut stream,
@@ -244,7 +243,7 @@ async fn portal_registration(
 }
 
 #[rustfmt::skip]
-pub async fn connect_with_portal(config: &AppConfig) -> Result<(), ErrorArrayItem> {
+pub async fn connect_with_portal(state:&mut AppState ) -> Result<(), ErrorArrayItem> {
     if PortalState::is_portal_linked(PORTAL_CONTROLS.clone()).await? {
         let addrs = PortalState::portal_addrs(PORTAL_CONTROLS.clone()).await?;
         for addr in addrs {
@@ -253,7 +252,7 @@ pub async fn connect_with_portal(config: &AppConfig) -> Result<(), ErrorArrayIte
         return Ok(());
     }
     
-    get_portal_addr(&config).await?;
+    get_portal_addr(&state.config).await?;
 
     for portal_conn in PortalState::portal_addrs(PORTAL_CONTROLS.clone()).await? {
         let mut stream: TcpStream = match establish_portal_connection(&portal_conn).await {
@@ -278,13 +277,18 @@ pub async fn connect_with_portal(config: &AppConfig) -> Result<(), ErrorArrayIte
             }
         };
 
-        if let Some(id) = PortalState::get_identity(PORTAL_CONTROLS.clone()).await? {
-            if let Err(err) = portal_registration(&mut stream, id).await {
+        match get_manager_data(state).await {
+            Ok(data) => {
+            if let Err(err) = portal_registration(&mut stream, data).await {
                 log!(LogLevel::Error, "Failed to register with portal @ {} -> {}", portal_conn, err);
             } else {
                 log!(LogLevel::Debug, "Registered with portal @ {} !", portal_conn);
                 PortalState::portal_linked(PORTAL_CONTROLS.clone()).await?;
             }
+            },
+            Err(err) => {
+                return Err(err);
+            },
         }
     }
     

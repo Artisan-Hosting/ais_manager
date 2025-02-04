@@ -145,10 +145,10 @@ async fn main() -> Result<(), ErrorArrayItem> {
     });
 
     // Regiser with portal
-    let config_clone = config.clone();
+    let mut state_clone = state.clone();
     tokio::spawn(async move {
         loop {
-            if let Err(err) = connect_with_portal(&config_clone).await {
+            if let Err(err) = connect_with_portal(&mut state_clone).await {
                 log!(LogLevel::Error, "{}", err)
             }
 
