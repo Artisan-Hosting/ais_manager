@@ -86,7 +86,7 @@ dependencies = [
 
 [[package]]
 name = "ais_manager"
-version = "0.1.0"
+version = "1.0.0"
 dependencies = [
  "artisan_middleware",
  "colored 3.0.0",

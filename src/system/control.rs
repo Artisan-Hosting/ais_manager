@@ -150,6 +150,7 @@ impl Controls {
             loop {
                 tokio::select! {
                     _ = self.reload_notify.notified() => {
+                        log!(LogLevel::Info, "Reloading");
                         self.pause_all_controls().await;
 
                         // Clearning the handlers
@@ -176,6 +177,7 @@ impl Controls {
                             },
                         };
 
+                        log!(LogLevel::Info, "Reloaded !");
                         self.resume_all_controls().await;
                     }
 

@@ -6,7 +6,7 @@ use applications::{
     monitor::{
         handle_dead_applications, handle_new_client_applications, handle_new_system_applications,
         monitor_application_resource_usage, update_client_state, update_system_state,
-    },
+    }, resolve::{resolve_client_applications, resolve_system_applications},
 };
 use artisan_middleware::{
     aggregator::load_registered_apps,
@@ -50,11 +50,15 @@ async fn main() -> Result<(), ErrorArrayItem> {
                 for app in arr {
                     app_status_array_write_lock.insert(app.clone().app_id, app);
                 }
+                drop(app_status_array_write_lock);
             }
             Err(err) => {
                 log!(LogLevel::Error, "{}", err);
                 log!(LogLevel::Info, "Creating new status tracking");
                 // Adding applications to the status array
+                drop(app_status_array_write_lock);
+                resolve_client_applications(&state.config).await?;
+                resolve_system_applications().await?;
                 populate_initial_state_lock(&mut state).await?;
             }
         }

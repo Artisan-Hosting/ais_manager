@@ -146,7 +146,7 @@ pub async fn handle_dead_applications() -> Result<(), ErrorArrayItem> {
                 SupervisedProcesses::Child(supervised_child) => {
                     if !supervised_child.running().await {
                         // Set status properly
-                        system_application_status.status = Status::Stopped;
+                        system_application_status.state.status = Status::Stopped;
                         system_application_status.metrics = None;
                         system_application_status.uptime = None;
                         system_application_status.timestamp = current_timestamp();
@@ -161,7 +161,7 @@ pub async fn handle_dead_applications() -> Result<(), ErrorArrayItem> {
                 SupervisedProcesses::Process(supervised_process) => {
                     if !supervised_process.active() {
                         // Set status properly
-                        system_application_status.status = Status::Stopped;
+                        system_application_status.state.status = Status::Stopped;
                         system_application_status.metrics = None;
                         system_application_status.uptime = None;
                         system_application_status.timestamp = current_timestamp();
@@ -186,7 +186,7 @@ pub async fn handle_dead_applications() -> Result<(), ErrorArrayItem> {
                 SupervisedProcesses::Child(supervised_child) => {
                     if !supervised_child.running().await {
                         // Set status properly
-                        client_application_status.status = Status::Stopped;
+                        client_application_status.state.status = Status::Stopped;
                         client_application_status.metrics = None;
                         client_application_status.uptime = None;
                         client_application_status.timestamp = current_timestamp();
@@ -202,7 +202,7 @@ pub async fn handle_dead_applications() -> Result<(), ErrorArrayItem> {
                 SupervisedProcesses::Process(supervised_process) => {
                     if !supervised_process.active() {
                         // Set status properly
-                        client_application_status.status = Status::Stopped;
+                        client_application_status.state.status = Status::Stopped;
                         client_application_status.metrics = None;
                         client_application_status.uptime = None;
                         client_application_status.timestamp = current_timestamp();
@@ -279,9 +279,9 @@ pub async fn handle_new_system_applications() -> Result<(), ErrorArrayItem> {
                     > = APP_STATUS_ARRAY.try_write().await?;
 
                     if let Some(app) = app_status_array_write_lock.get_mut(&id.0) {
-                        app.pid = process.get_pid() as u32;
-                        app.status = app_state.status;
-                        if app.status == Status::Idle {
+                        app.state.pid = process.get_pid() as u32;
+                        app.state.status = app_state.status;
+                        if app.state.status == Status::Idle {
                             app.metrics = None;
                         }
                     }
@@ -354,8 +354,8 @@ pub async fn handle_new_client_applications(state: &mut AppState) -> Result<(), 
                     > = APP_STATUS_ARRAY.try_write().await?;
 
                     if let Some(app) = app_status_array_write_lock.get_mut(&id.0) {
-                        app.pid = process.get_pid() as u32;
-                        app.status = app_state.status;
+                        app.state.pid = process.get_pid() as u32;
+                        app.state.status = app_state.status;
                     }
 
                     // Adding to handler
@@ -403,16 +403,10 @@ pub async fn update_client_state(
             client_application_array_read_lock.get(&mut_client_status.0.to_string())
         {
             if let Some(state) = &new_client_state.state {
-                mut_client_status.1.status = state.status;
-                if !state.error_log.is_empty() {
-                    mut_client_status.1.error = Some(state.error_log.clone())
-                } else {
-                    mut_client_status.1.error = None
-                }
-
+                mut_client_status.1.state = state.clone();
                 if !is_pid_active(state.pid as i32).map_err(ErrorArrayItem::from)? {
-                    mut_client_status.1.error = None;
-                    mut_client_status.1.status = Status::Stopped;
+                    mut_client_status.1.state.error_log.clear();
+                    mut_client_status.1.state.status = Status::Stopped;
                 }
 
                 calculate_uptime(mut_client_status.1, state);
@@ -444,16 +438,16 @@ pub async fn update_system_state(
             system_application_array_read_lock.get(&mut_system_status.0.to_string())
         {
             if let Some(state) = &new_client_state.state {
-                mut_system_status.1.status = state.status;
+                mut_system_status.1.state.status = state.status;
                 if !state.error_log.is_empty() {
-                    mut_system_status.1.error = Some(state.error_log.clone())
+                    mut_system_status.1.state.error_log = state.error_log.clone();
                 } else {
-                    mut_system_status.1.error = None
+                    mut_system_status.1.state.error_log.clear();
                 }
 
                 if !is_pid_active(state.pid as i32).map_err(ErrorArrayItem::from)? {
-                    mut_system_status.1.error = None;
-                    mut_system_status.1.status = Status::Stopped;
+                    mut_system_status.1.state.error_log.clear();
+                    mut_system_status.1.state.status = Status::Stopped;
                 }
 
                 calculate_uptime(mut_system_status.1, state);
@@ -469,13 +463,13 @@ fn calculate_uptime(app: &mut AppStatus, state: &AppState) {
     let timedout = state.last_updated <= (current_timestamp() - 30);
 
     if timedout {
-        app.status = Status::Unknown;
+        app.state.status = Status::Unknown;
         app.metrics = None;
     }
 
-    let running: bool = app.status != Status::Unknown
-        && app.status != Status::Stopping
-        && app.status != Status::Stopped;
+    let running: bool = app.state.status != Status::Unknown
+        && app.state.status != Status::Stopping
+        && app.state.status != Status::Stopped;
 
     if !running {
         app.uptime = None;
@@ -488,24 +482,24 @@ fn calculate_uptime(app: &mut AppStatus, state: &AppState) {
 
 fn check_balances(app: &mut AppStatus) {
     // Set warning if we have errors
-    if app.status == Status::Stopped {
+    if app.state.status == Status::Stopped {
         app.timestamp = current_timestamp();
         app.uptime = None;
     }
 
-    if app.status == Status::Running && app.error.is_some() {
-        app.status = Status::Warning;
+    if app.state.status == Status::Running && !app.state.error_log.is_empty() {
+        app.state.status = Status::Warning;
     }
 
     // clearing data for unknown
-    if app.status == Status::Unknown || app.status == Status::Stopped {
+    if app.state.status == Status::Unknown || app.state.status == Status::Stopped {
         app.metrics = None;
-        app.error = None;
+        app.state.error_log.clear();
         app.timestamp = current_timestamp();
     }
 
-    if app.status == Status::Stopping {
-        app.status = Status::Stopped
+    if app.state.status == Status::Stopping {
+        app.state.status = Status::Stopped
     }
 }
 

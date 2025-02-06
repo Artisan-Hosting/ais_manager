@@ -552,36 +552,18 @@ pub async fn populate_initial_state_lock(state: &mut AppState) -> Result<(), Err
     for app in app_states {
         let status = match app.1 {
             Some(state) => AppStatus {
-                pid: state.pid,
                 app_id: Stringy::from(&state.name),
                 uptime: Some(current_timestamp() - state.last_updated),
-                error: if !state.error_log.is_empty() {
-                    Some(state.error_log)
-                } else {
-                    None
-                },
                 metrics: None,
                 timestamp: state.last_updated,
                 expected_status: Status::Running,
-                system_application: app.2,
-                status: state.status,
                 git_id: state.config.app_name.replace("ais_", "").into(),
+                state,
             },
-            None => AppStatus {
-                app_id: Stringy::from(app.clone().0),
-                status: Status::Unknown,
-                uptime: None,
-                error: Some(vec![ErrorArrayItem::new(
-                    Errors::NotFound,
-                    "Binary or state file not found",
-                )]),
-                metrics: None,
-                timestamp: current_timestamp(),
-                expected_status: Status::Unknown,
-                system_application: app.2,
-                git_id: app.0.replace("ais_", "").into(),
-                pid: 0,
-            },
+            None => {
+                log!(LogLevel::Error, "{}, has no state file, skipping", app.0);
+                continue;
+            }
         };
 
         if let Some(data) =

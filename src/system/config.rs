@@ -88,7 +88,15 @@ pub async fn generate_state(config: &AppConfig) -> AppState {
             log!(LogLevel::Debug, "Error loading previous state: {}", e);
             let mut state = AppState {
                 name: env!("CARGO_PKG_NAME").to_owned(),
-                version: SoftwareVersion::dummy(),
+                version: {
+                    let library_version: Version = aml_version();
+                    let software_version: Version = str_to_version(env!("CARGO_PKG_VERSION"), Some(VersionCode::Production));
+                    
+                    SoftwareVersion {
+                        application: software_version,
+                        library: library_version,
+                    }
+                },
                 data: String::new(),
                 last_updated: current_timestamp(),
                 event_counter: 0,

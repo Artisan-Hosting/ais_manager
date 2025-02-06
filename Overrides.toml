@@ -1,6 +1,6 @@
 # Overrides for the default config from the lib
 
-debug_mode = true
+debug_mode = false
 log_level = "Info"
 #environment = "systemonly"
 

@@ -31,48 +31,48 @@ pub async fn stop_application(app_id: &Stringy) -> Result<(), ErrorArrayItem> {
     > = APP_STATUS_ARRAY.try_write().await?;
 
     let app_status = match app_status_array_write_lock.get_mut(&app_id) {
-        Some(status) => {
-            status.status = Status::Stopping;
-            Some(status)
+        Some(app_data) => {
+            app_data.state.status = Status::Stopping;
+            Some(app_data)
         }
         None => None, // couldn't find
     };
 
     match app_status {
-        Some(status) => {
+        Some(app_data) => {
             // Determine if it's a system app
-            let child: Option<SupervisedProcesses> = if status.system_application {
+            let child: Option<SupervisedProcesses> = if app_data.state.system_application {
                 let mut lock = SYSTEM_APPLICATION_HANDLER.try_write().await?;
                 log!(
                     LogLevel::Trace,
                     "{} Dropped from handler for termination",
-                    status.app_id
+                    app_data.app_id
                 );
-                lock.remove(&status.app_id.to_string())
+                lock.remove(&app_data.app_id.to_string())
             } else {
                 let mut lock = CLIENT_APPLICATION_HANDLER.try_write().await?;
                 log!(
                     LogLevel::Trace,
                     "{} Dropped from handler for termination",
-                    status.app_id
+                    app_data.app_id
                 );
-                lock.remove(&status.app_id.to_string())
+                lock.remove(&app_data.app_id.to_string())
             };
 
             if let Some(child) = child {
                 match child {
                     SupervisedProcesses::Child(supervised_child) => {
-                        status.status = Status::Stopped;
-                        status.metrics = None;
-                        status.uptime = None;
+                        app_data.state.status = Status::Stopped;
+                        app_data.metrics = None;
+                        app_data.uptime = None;
                         drop(app_status_array_write_lock);
                         send_stop(supervised_child.get_pid().await? as i32)?;
                         return Ok(());
                     }
                     SupervisedProcesses::Process(supervised_process) => {
-                        status.status = Status::Stopped;
-                        status.metrics = None;
-                        status.uptime = None;
+                        app_data.state.status = Status::Stopped;
+                        app_data.metrics = None;
+                        app_data.uptime = None;
                         drop(app_status_array_write_lock);
                         send_stop(supervised_process.get_pid())?;
                         return Ok(());
@@ -116,9 +116,9 @@ pub async fn reload_application(app_id: &Stringy) -> Result<(), ErrorArrayItem> 
     > = APP_STATUS_ARRAY.try_write().await?;
 
     let app_status = match app_status_array_write_lock.get_mut(&app_id) {
-        Some(status) => {
-            status.status = Status::Stopping;
-            Some(status)
+        Some(app_data) => {
+            app_data.state.status = Status::Stopping;
+            Some(app_data)
         }
         None => None, // couldn't find
     };
@@ -193,14 +193,14 @@ pub async fn start_application(
     let mut app_status_array_write_lock = APP_STATUS_ARRAY.try_write().await?;
 
     // Retrieve or initialize app status
-    let app_status = app_status_array_write_lock.get_mut(app_id).map(|status| {
-        status.status = Status::Starting;
-        status
+    let app_status = app_status_array_write_lock.get_mut(app_id).map(|app_data| {
+        app_data.state.status = Status::Starting;
+        app_data
     });
 
     // Attempt to start the application
-    let app_started = if let Some(ref app_status) = app_status {
-        if app_status.system_application {
+    let app_started = if let Some(ref app_data) = app_status {
+        if app_data.state.system_application {
             start_system_application(app_id, state, state_path).await?
         } else if config.environment != "systemonly" {
             start_client_application(app_id, config, state, state_path).await?
@@ -223,9 +223,9 @@ pub async fn start_application(
 
     // Update application status and handle the result
     if app_started {
-        if let Some(app_status) = app_status {
-            app_status.status = Status::Running;
-            app_status.timestamp = current_timestamp();
+        if let Some(app_data) = app_status {
+            app_data.state.status = Status::Running;
+            app_data.timestamp = current_timestamp();
         }
         Ok(())
     } else {
