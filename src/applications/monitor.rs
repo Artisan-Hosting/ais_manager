@@ -22,7 +22,7 @@ use super::pid::reclaim_child;
 use super::resolve::ClientApplication;
 
 pub async fn monitor_application_resource_usage(
-    handler: LockWithTimeout<HashMap<String, SupervisedProcesses>>,
+    handler: LockWithTimeout<HashMap<Stringy, SupervisedProcesses>>,
 ) -> Result<(), ErrorArrayItem> {
     let application_handler_read_lock = handler.try_read().await?;
 
@@ -57,8 +57,7 @@ pub async fn monitor_application_resource_usage(
                         monitor_lock.cpu = usage.0;
                         monitor_lock.ram = usage.1;
 
-                        if let Some(app_arr_val) = app_status_array_write_lock.get_mut(&name.into())
-                        {
+                        if let Some(app_arr_val) = app_status_array_write_lock.get_mut(&name) {
                             app_arr_val.metrics = Some(Metrics {
                                 cpu_usage: usage.0,
                                 memory_usage: usage.1,
@@ -95,8 +94,7 @@ pub async fn monitor_application_resource_usage(
                         monitor_lock.cpu = usage.0;
                         monitor_lock.ram = usage.1;
 
-                        if let Some(app_arr_val) = app_status_array_write_lock.get_mut(&name.into())
-                        {
+                        if let Some(app_arr_val) = app_status_array_write_lock.get_mut(&name) {
                             app_arr_val.metrics = Some(Metrics {
                                 cpu_usage: usage.0,
                                 memory_usage: usage.1,
@@ -116,7 +114,6 @@ pub async fn monitor_application_resource_usage(
     Ok(())
 }
 
-
 pub async fn handle_dead_applications() -> Result<(), ErrorArrayItem> {
     let mut app_status_array_write_lock: tokio::sync::RwLockWriteGuard<
         '_,
@@ -125,28 +122,28 @@ pub async fn handle_dead_applications() -> Result<(), ErrorArrayItem> {
 
     let mut system_handler_write_lock: tokio::sync::RwLockWriteGuard<
         '_,
-        HashMap<String, SupervisedProcesses>,
+        HashMap<Stringy, SupervisedProcesses>,
     > = SYSTEM_APPLICATION_HANDLER.try_write().await?;
 
     let mut system_handler_to_remove: HashSet<Stringy> = HashSet::new();
 
     let mut client_handler_write_lock: tokio::sync::RwLockWriteGuard<
         '_,
-        HashMap<String, SupervisedProcesses>,
+        HashMap<Stringy, SupervisedProcesses>,
     > = CLIENT_APPLICATION_HANDLER.try_write().await?;
 
     let mut client_handler_to_remove: HashSet<Stringy> = HashSet::new();
 
     for system_handle in system_handler_write_lock.iter_mut() {
-        let system_name: &String = system_handle.0;
-        if let Some(system_application_status) =
-            app_status_array_write_lock.get_mut(&system_name.into())
-        {
+        let system_name: &Stringy = system_handle.0;
+        if let Some(system_application_status) = app_status_array_write_lock.get_mut(&system_name) {
             match system_handle.1 {
                 SupervisedProcesses::Child(supervised_child) => {
                     if !supervised_child.running().await {
                         // Set status properly
-                        system_application_status.state.status = Status::Stopped;
+                        system_application_status
+                            .app_data
+                            .set_status(Status::Stopped);
                         system_application_status.metrics = None;
                         system_application_status.uptime = None;
                         system_application_status.timestamp = current_timestamp();
@@ -161,7 +158,9 @@ pub async fn handle_dead_applications() -> Result<(), ErrorArrayItem> {
                 SupervisedProcesses::Process(supervised_process) => {
                     if !supervised_process.active() {
                         // Set status properly
-                        system_application_status.state.status = Status::Stopped;
+                        system_application_status
+                            .app_data
+                            .set_status(Status::Stopped);
                         system_application_status.metrics = None;
                         system_application_status.uptime = None;
                         system_application_status.timestamp = current_timestamp();
@@ -178,19 +177,18 @@ pub async fn handle_dead_applications() -> Result<(), ErrorArrayItem> {
     }
 
     for client_handle in client_handler_write_lock.iter_mut() {
-        let client_name: &String = client_handle.0;
-        if let Some(client_application_status) =
-            app_status_array_write_lock.get_mut(&client_name.into())
-        {
+        let client_name: &Stringy = client_handle.0;
+        if let Some(client_application_status) = app_status_array_write_lock.get_mut(&client_name) {
             match client_handle.1 {
                 SupervisedProcesses::Child(supervised_child) => {
                     if !supervised_child.running().await {
                         // Set status properly
-                        client_application_status.state.status = Status::Stopped;
+                        client_application_status
+                            .app_data
+                            .set_status(Status::Stopped);
                         client_application_status.metrics = None;
                         client_application_status.uptime = None;
                         client_application_status.timestamp = current_timestamp();
-
 
                         // put in to be removed set
                         client_handler_to_remove.insert(client_application_status.app_id.clone());
@@ -202,7 +200,9 @@ pub async fn handle_dead_applications() -> Result<(), ErrorArrayItem> {
                 SupervisedProcesses::Process(supervised_process) => {
                     if !supervised_process.active() {
                         // Set status properly
-                        client_application_status.state.status = Status::Stopped;
+                        client_application_status
+                            .app_data
+                            .set_status(Status::Stopped);
                         client_application_status.metrics = None;
                         client_application_status.uptime = None;
                         client_application_status.timestamp = current_timestamp();
@@ -220,14 +220,14 @@ pub async fn handle_dead_applications() -> Result<(), ErrorArrayItem> {
 
     // removing system apps
     for id in system_handler_to_remove.iter() {
-        if let Some(_) = system_handler_write_lock.remove(&id.to_string()) {
+        if let Some(_) = system_handler_write_lock.remove(&id) {
             log!(LogLevel::Info, "Removed: {} from system handler", id);
         }
     }
 
     // removing client apps
     for id in client_handler_to_remove.iter() {
-        if let Some(_) = client_handler_write_lock.remove(&id.to_string()) {
+        if let Some(_) = client_handler_write_lock.remove(&id) {
             log!(LogLevel::Info, "Removed: {} from client handler", id);
         }
     }
@@ -241,19 +241,19 @@ pub async fn handle_new_system_applications() -> Result<(), ErrorArrayItem> {
 
     let mut system_handler_write_lock: tokio::sync::RwLockWriteGuard<
         '_,
-        HashMap<String, SupervisedProcesses>,
+        HashMap<Stringy, SupervisedProcesses>,
     > = SYSTEM_APPLICATION_HANDLER.try_write().await?;
 
     let system_application_read_lock: tokio::sync::RwLockReadGuard<
         '_,
-        HashMap<String, crate::applications::resolve::SystemApplication>,
+        HashMap<Stringy, crate::applications::resolve::SystemApplication>,
     > = SYSTEM_APPLICATION_ARRAY.try_read().await?;
 
     let mut system_to_start: HashMap<Stringy, SystemApplication> = HashMap::new();
 
     for new_app in system_application_read_lock.iter() {
         if !system_handler_write_lock.contains_key(new_app.0) {
-            system_to_start.insert(new_app.0.into(), new_app.1.clone());
+            system_to_start.insert(new_app.0.clone(), new_app.1.clone());
         }
     }
 
@@ -267,41 +267,41 @@ pub async fn handle_new_system_applications() -> Result<(), ErrorArrayItem> {
         // spawn_single_application(Application::System(id.1), &mut state, state_path).await?;
         // instead of spawning let's just try to reclaim the pid
 
-        if let Some(app_state) = id.1.state {
-            match reclaim_child(app_state.pid).await {
-                Ok(mut process) => {
-                    process.monitor_usage().await;
+        let app_state = id.clone().1.config;
 
-                    // Updating the status array
-                    let mut app_status_array_write_lock: tokio::sync::RwLockWriteGuard<
-                        '_,
-                        HashMap<Stringy, AppStatus>,
-                    > = APP_STATUS_ARRAY.try_write().await?;
+        match reclaim_child(app_state.get_pid()).await {
+            Ok(mut process) => {
+                process.monitor_usage().await;
 
-                    if let Some(app) = app_status_array_write_lock.get_mut(&id.0) {
-                        app.state.pid = process.get_pid() as u32;
-                        app.state.status = app_state.status;
-                        if app.state.status == Status::Idle {
-                            app.metrics = None;
-                        }
+                // Updating the status array
+                let mut app_status_array_write_lock: tokio::sync::RwLockWriteGuard<
+                    '_,
+                    HashMap<Stringy, AppStatus>,
+                > = APP_STATUS_ARRAY.try_write().await?;
+
+                if let Some(app) = app_status_array_write_lock.get_mut(&id.0) {
+                    app.app_data.set_pid(process.get_pid() as u32);
+                    app.app_data.set_status(app_state.get_status());
+                    if app.app_data.get_status() == Status::Idle {
+                        app.metrics = None;
                     }
-
-                    // Adding to handler
-                    system_handler_write_lock
-                        .insert(id.0.to_string(), SupervisedProcesses::Process(process));
-                    log!(
-                        LogLevel::Info,
-                        "{} Started and added to the system handler",
-                        id.0
-                    );
                 }
-                Err(err) => {
-                    if err.err_type == Errors::SupervisedChild {
-                        log!(LogLevel::Trace, "{} not currently running", id.0);
-                        continue;
-                    } else {
-                        return Err(err);
-                    }
+
+                // Adding to handler
+                system_handler_write_lock
+                    .insert(id.clone().0, SupervisedProcesses::Process(process));
+                log!(
+                    LogLevel::Info,
+                    "{} Started and added to the system handler",
+                    id.0
+                );
+            }
+            Err(err) => {
+                if err.err_type == Errors::SupervisedChild {
+                    log!(LogLevel::Trace, "{} not currently running", id.0);
+                    continue;
+                } else {
+                    return Err(err);
                 }
             }
         }
@@ -316,19 +316,19 @@ pub async fn handle_new_client_applications(state: &mut AppState) -> Result<(), 
 
     let mut client_handler_write_lock: tokio::sync::RwLockWriteGuard<
         '_,
-        HashMap<String, SupervisedProcesses>,
+        HashMap<Stringy, SupervisedProcesses>,
     > = CLIENT_APPLICATION_HANDLER.try_write().await?;
 
     let client_application_read_lock: tokio::sync::RwLockReadGuard<
         '_,
-        HashMap<String, crate::applications::resolve::ClientApplication>,
+        HashMap<Stringy, crate::applications::resolve::ClientApplication>,
     > = CLIENT_APPLICATION_ARRAY.try_read().await?;
 
     let mut client_to_start: HashMap<Stringy, ClientApplication> = HashMap::new();
 
     for new_app in client_application_read_lock.iter() {
         if !client_handler_write_lock.contains_key(new_app.0) {
-            client_to_start.insert(new_app.0.into(), new_app.1.clone());
+            client_to_start.insert(new_app.0.clone(), new_app.1.clone());
         }
     }
 
@@ -342,38 +342,38 @@ pub async fn handle_new_client_applications(state: &mut AppState) -> Result<(), 
         // spawn_single_application(Application::System(id.1), &mut state, state_path).await?;
         // instead of spawning let's just try to reclaim the pid
 
-        if let Some(app_state) = id.1.state {
-            match reclaim_child(app_state.pid).await {
-                Ok(mut process) => {
-                    process.monitor_usage().await;
+        let app_state = id.clone().1.config;
 
-                    // Updating the status array
-                    let mut app_status_array_write_lock: tokio::sync::RwLockWriteGuard<
-                        '_,
-                        HashMap<Stringy, AppStatus>,
-                    > = APP_STATUS_ARRAY.try_write().await?;
+        match reclaim_child(app_state.get_pid()).await {
+            Ok(mut process) => {
+                process.monitor_usage().await;
 
-                    if let Some(app) = app_status_array_write_lock.get_mut(&id.0) {
-                        app.state.pid = process.get_pid() as u32;
-                        app.state.status = app_state.status;
-                    }
+                // Updating the status array
+                let mut app_status_array_write_lock: tokio::sync::RwLockWriteGuard<
+                    '_,
+                    HashMap<Stringy, AppStatus>,
+                > = APP_STATUS_ARRAY.try_write().await?;
 
-                    // Adding to handler
-                    client_handler_write_lock
-                        .insert(id.0.to_string(), SupervisedProcesses::Process(process));
-                    log!(
-                        LogLevel::Info,
-                        "{} Started and added to the client handler",
-                        id.0
-                    );
+                if let Some(app) = app_status_array_write_lock.get_mut(&id.0) {
+                    app.app_data.set_pid(process.get_pid() as u32);
+                    app.app_data.set_status(app_state.get_status());
                 }
-                Err(err) => {
-                    if err.err_type == Errors::SupervisedChild {
-                        log!(LogLevel::Trace, "{} not currently running", id.0);
-                        continue;
-                    } else {
-                        return Err(err);
-                    }
+
+                // Adding to handler
+                client_handler_write_lock
+                    .insert(id.clone().0, SupervisedProcesses::Process(process));
+                log!(
+                    LogLevel::Info,
+                    "{} Started and added to the client handler",
+                    id.0
+                );
+            }
+            Err(err) => {
+                if err.err_type == Errors::SupervisedChild {
+                    log!(LogLevel::Trace, "{} not currently running", id.0);
+                    continue;
+                } else {
+                    return Err(err);
                 }
             }
         }
@@ -382,9 +382,7 @@ pub async fn handle_new_client_applications(state: &mut AppState) -> Result<(), 
     Ok(())
 }
 
-pub async fn update_client_state(
-    state: &mut AppState,
-) -> Result<(), ErrorArrayItem> {
+pub async fn update_client_state(state: &mut AppState) -> Result<(), ErrorArrayItem> {
     // Updating state files for system applications
     resolve_client_applications(&state.clone().config).await?;
 
@@ -395,30 +393,27 @@ pub async fn update_client_state(
 
     let client_application_array_read_lock: tokio::sync::RwLockReadGuard<
         '_,
-        HashMap<String, crate::applications::resolve::ClientApplication>,
+        HashMap<Stringy, crate::applications::resolve::ClientApplication>,
     > = CLIENT_APPLICATION_ARRAY.try_read().await?;
 
     for mut_client_status in application_status_array_write_lock.iter_mut() {
-        if let Some(new_client_state) =
-            client_application_array_read_lock.get(&mut_client_status.0.to_string())
+        if let Some(new_client_state) = client_application_array_read_lock.get(&mut_client_status.0)
         {
-            if let Some(state) = &new_client_state.state {
-                mut_client_status.1.state = state.clone();
-                if !is_pid_active(state.pid as i32).map_err(ErrorArrayItem::from)? {
-                    mut_client_status.1.state.error_log.clear();
-                    mut_client_status.1.state.status = Status::Stopped;
-                }
-
-                calculate_uptime(mut_client_status.1, state);
+            let state = new_client_state.config.get_state();
+            mut_client_status.1.app_data.update_state(state.clone());
+            if !is_pid_active(state.pid as i32).map_err(ErrorArrayItem::from)? {
+                mut_client_status.1.app_data.clear_errors();
+                mut_client_status.1.app_data.set_status(Status::Stopped);
             }
+
+            calculate_uptime(mut_client_status.1, &state);
         }
     }
 
     Ok(())
 }
 
-pub async fn update_system_state(
-) -> Result<(), ErrorArrayItem> {
+pub async fn update_system_state() -> Result<(), ErrorArrayItem> {
     // Updating state files for system applications
     resolve_system_applications().await?;
 
@@ -429,29 +424,28 @@ pub async fn update_system_state(
 
     let system_application_array_read_lock: tokio::sync::RwLockReadGuard<
         '_,
-        HashMap<String, crate::applications::resolve::SystemApplication>,
+        HashMap<Stringy, crate::applications::resolve::SystemApplication>,
     > = SYSTEM_APPLICATION_ARRAY.try_read().await?;
 
     for mut_system_status in application_status_array_write_lock.iter_mut() {
-        
-        if let Some(new_client_state) =
-            system_application_array_read_lock.get(&mut_system_status.0.to_string())
+        if let Some(new_client_state) = system_application_array_read_lock.get(&mut_system_status.0)
         {
-            if let Some(state) = &new_client_state.state {
-                mut_system_status.1.state.status = state.status;
-                if !state.error_log.is_empty() {
-                    mut_system_status.1.state.error_log = state.error_log.clone();
-                } else {
-                    mut_system_status.1.state.error_log.clear();
-                }
+            let state = new_client_state.config.get_state();
 
-                if !is_pid_active(state.pid as i32).map_err(ErrorArrayItem::from)? {
-                    mut_system_status.1.state.error_log.clear();
-                    mut_system_status.1.state.status = Status::Stopped;
-                }
-
-                calculate_uptime(mut_system_status.1, state);
+            mut_system_status.1.app_data.set_status(state.status);
+            
+            if !state.error_log.is_empty() {
+                mut_system_status.1.app_data.update_error_log(state.clone().error_log, false);
+            } else {
+                mut_system_status.1.app_data.clear_errors();
             }
+
+            if !is_pid_active(state.pid as i32).map_err(ErrorArrayItem::from)? {
+                mut_system_status.1.app_data.clear_errors();
+                mut_system_status.1.app_data.set_status(Status::Stopped);
+            }
+
+            calculate_uptime(mut_system_status.1, &state);
         }
     }
 
@@ -463,13 +457,13 @@ fn calculate_uptime(app: &mut AppStatus, state: &AppState) {
     let timedout = state.last_updated <= (current_timestamp() - 30);
 
     if timedout {
-        app.state.status = Status::Unknown;
+        app.app_data.set_status(Status::Unknown);
         app.metrics = None;
     }
 
-    let running: bool = app.state.status != Status::Unknown
-        && app.state.status != Status::Stopping
-        && app.state.status != Status::Stopped;
+    let running: bool = app.app_data.get_status() != Status::Unknown
+        && app.app_data.get_status() != Status::Stopping
+        && app.app_data.get_status() != Status::Stopped;
 
     if !running {
         app.uptime = None;
@@ -482,24 +476,23 @@ fn calculate_uptime(app: &mut AppStatus, state: &AppState) {
 
 fn check_balances(app: &mut AppStatus) {
     // Set warning if we have errors
-    if app.state.status == Status::Stopped {
+    if app.app_data.get_status() == Status::Stopped {
         app.timestamp = current_timestamp();
         app.uptime = None;
     }
 
-    if app.state.status == Status::Running && !app.state.error_log.is_empty() {
-        app.state.status = Status::Warning;
+    if app.app_data.get_status() == Status::Running && !app.app_data.no_errors() {
+        app.app_data.set_status(Status::Warning);
     }
 
     // clearing data for unknown
-    if app.state.status == Status::Unknown || app.state.status == Status::Stopped {
+    if app.app_data.get_status() == Status::Unknown || app.app_data.get_status() == Status::Stopped {
         app.metrics = None;
-        app.state.error_log.clear();
+        app.app_data.clear_errors();
         app.timestamp = current_timestamp();
     }
 
-    if app.state.status == Status::Stopping {
-        app.state.status = Status::Stopped
+    if app.app_data.get_status() == Status::Stopping {
+        app.app_data.set_status(Status::Stopped)
     }
 }
-

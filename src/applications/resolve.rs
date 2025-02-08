@@ -1,9 +1,10 @@
 use artisan_middleware::config::AppConfig;
+use artisan_middleware::config_bundle::ApplicationConfig;
 use artisan_middleware::dusa_collection_utils::errors::{ErrorArrayItem, Errors};
 use artisan_middleware::dusa_collection_utils::log;
 use artisan_middleware::dusa_collection_utils::stringy::Stringy;
 use artisan_middleware::dusa_collection_utils::{log::LogLevel, types::PathType};
-use artisan_middleware::enviornment::definitions::Enviornment_V1;
+use artisan_middleware::enviornment::definitions::Enviornment;
 use artisan_middleware::git_actions::GitCredentials;
 use artisan_middleware::state_persistence::{AppState, StatePersistence};
 use serde::{Deserialize, Serialize};
@@ -30,20 +31,19 @@ pub enum Application {
 #[allow(dead_code)]
 #[derive(Debug, Serialize, Deserialize, Clone)]
 pub struct SystemApplication {
-    pub name: String,
+    pub name: Stringy,
     pub path: PathType,
     pub exists: bool,
-    pub state: Option<AppState>,
+    pub config: ApplicationConfig,
 }
 
 #[allow(dead_code)]
 #[derive(Debug, Serialize, Deserialize, Clone)]
 pub struct ClientApplication {
-    pub name: String,
+    pub name: Stringy,
     pub path: PathType,
     pub exists: bool,
-    pub state: Option<AppState>,
-    pub environ: Option<Enviornment_V1>,
+    pub config: ApplicationConfig,
 }
 
 impl fmt::Display for ClientApplication {
@@ -54,34 +54,29 @@ impl fmt::Display for ClientApplication {
             self.name,
             self.path,
             self.exists,
-            self.state.as_ref().map_or("None".to_string(), |s| s.to_string()),
-            self.environ
+            self.config.state,
+            self.config.enviornment
                 .as_ref()
                 .map_or("None".to_string(), |e| e.to_string())
         )
     }
 }
 
-pub struct _ClientEnviornment {
-    uid: u32,
-    gid: u32,
-}
-
 #[allow(unused_assignments)]
 pub async fn resolve_system_applications() -> Result<(), ErrorArrayItem> {
-    let system_application_names: Vec<String> = SYSTEMAPPLICATIONS
+    let system_application_names: Vec<Stringy> = SYSTEMAPPLICATIONS
         .iter()
         .map(|app_name| {
             if *app_name == "self" {
-                "ais_manager".to_string()
+                "ais_manager".into()
             } else {
-                format!("ais_{}", app_name)
+                format!("ais_{}", app_name).into()
             }
         })
         .collect();
 
     // assemble the Struct from the array
-    let mut tasks: Vec<task::JoinHandle<SystemApplication>> = Vec::new();
+    let mut tasks: Vec<task::JoinHandle<Result<SystemApplication, ()>>> = Vec::new();
 
     for name in system_application_names {
         let name = name.clone();
@@ -89,40 +84,52 @@ pub async fn resolve_system_applications() -> Result<(), ErrorArrayItem> {
             let application_path = PathType::Content(format!("/opt/artisan/bin/{}", name));
             let application_state_path = PathType::Content(format!("/tmp/.{}.state", name));
 
-            let state: Option<AppState> = if application_state_path.exists() {
-                match StatePersistence::load_state(&application_state_path).await {
-                    Ok(state) => Some(state),
-                    Err(err) => {
-                        log!(LogLevel::Error, "Couldn't load system app state data: {}", err);
-                        None
-                    }
-                }
-            } else {
-                None
+            if !application_state_path.exists() {
+                log!(
+                    LogLevel::Error,
+                    "Couldn't find state file for: {}\nWe won't manage it",
+                    name
+                );
+                return Err(());
             };
 
-            if name != "ais_manager" {
-                SystemApplication {
-                    name,
-                    path: application_path.clone(),
-                    exists: application_path.exists(),
-                    state,
+            let state: AppState = match StatePersistence::load_state(&application_state_path).await
+            {
+                Ok(state) => state,
+                Err(err) => {
+                    log!(
+                        LogLevel::Error,
+                        "Couldn't load system app state data: {}",
+                        err
+                    );
+                    return Err(());
                 }
-            } else {
-                SystemApplication {
-                    name,
-                    path: PathType::Content(format!("/opt/artisan/bin/ais_manager")),
-                    exists: true,
-                    state,
-                }
+            };
+
+            let mut system_application = SystemApplication {
+                name: name.clone(),
+                path: application_path.clone(),
+                exists: application_path.exists(),
+                config: ApplicationConfig::new(state, None, None),
+            };
+
+            if name == "ais_manager".into() {
+                system_application.path =
+                    PathType::Content(format!("/opt/artisan/bin/ais_manager"));
             }
+
+            Ok(system_application)
         }));
     }
 
     let mut results: Vec<SystemApplication> = Vec::new();
     for task in tasks {
         match task.await {
-            Ok(system) => results.push(system),
+            Ok(system) => {
+                if let Ok(sys_app) = system {
+                    results.push(sys_app);
+                }
+            }
             Err(err) => {
                 log!(
                     LogLevel::Error,
@@ -136,7 +143,7 @@ pub async fn resolve_system_applications() -> Result<(), ErrorArrayItem> {
     // Writing to the system array
     let mut system_application_array_write_lock: tokio::sync::RwLockWriteGuard<
         '_,
-        std::collections::HashMap<String, SystemApplication>,
+        std::collections::HashMap<Stringy, SystemApplication>,
     > = SYSTEM_APPLICATION_ARRAY.try_write().await?;
 
     for app in results {
@@ -234,7 +241,7 @@ pub async fn resolve_client_applications(config: &AppConfig) -> Result<(), Error
         });
 
     // assemble the Struct from the array
-    let mut tasks: Vec<task::JoinHandle<ClientApplication>> = Vec::new();
+    let mut tasks: Vec<task::JoinHandle<Result<ClientApplication, ()>>> = Vec::new();
 
     for name in client_applications_names {
         let name = name.clone();
@@ -244,57 +251,61 @@ pub async fn resolve_client_applications(config: &AppConfig) -> Result<(), Error
             let application_env_path = PathType::Content(format!("/etc/{}/.env", name));
 
             // TODO This is where the enviornment file will be sourced
-            let env: Option<Enviornment_V1> = if application_state_path.exists() {
-                let encrypted_content: Option<Vec<u8>> =
+            let env: Option<Enviornment> = if application_env_path.exists() {
+                let enviornment: Enviornment =
                     match fs::read_to_string(application_env_path).map_err(ErrorArrayItem::from) {
-                        Ok(data) => Some(data.as_bytes().to_vec()),
-                        Err(_) => {
-                            None
+                        Ok(data) => {
+                            let raw_env_file = data.as_bytes();
+                            if let Ok(data) = Enviornment::parse(&raw_env_file).await {
+                                data
+                            } else {
+                                log!(LogLevel::Error, "Failed to parse env");
+                                return Err(());
+                            }
+                        }
+                        Err(err) => {
+                            log!(LogLevel::Error, "Failed to parse env: {}", err.err_mesg);
+                            return Err(());
                         }
                     };
 
-                if let Some(data) = encrypted_content {
-                    match Enviornment_V1::parse_from(&data).await {
-                        Ok(data) => Some(data),
-                        Err(err) => {
-                            log!(LogLevel::Error, "{}", err);
-                            None
-                        }
-                    }
-                } else {
-                    None
-                }
+                Some(enviornment)
             } else {
                 log!(LogLevel::Warn, "No enviornment file for: {}", name);
                 None
             };
 
-            let state: Option<AppState> = if application_state_path.exists() {
-                match StatePersistence::load_state(&application_state_path).await {
-                    Ok(state) => Some(state),
-                    Err(err) => {
-                        log!(LogLevel::Error, "Couldn't load client state data: {}", err);
-                        None
-                    }
+            let state: AppState = match StatePersistence::load_state(&application_state_path).await
+            {
+                Ok(state) => state,
+                Err(err) => {
+                    log!(
+                        LogLevel::Error,
+                        "Couldn't load system app state data: {}",
+                        err
+                    );
+                    return Err(());
                 }
-            } else {
-                None
             };
 
-            ClientApplication {
-                name,
+            let client_application = ClientApplication {
+                name: state.clone().name.into(),
                 path: application_path.clone(),
                 exists: application_path.exists(),
-                state,
-                environ: env,
-            }
+                config: ApplicationConfig::new(state, env, None),
+            };
+
+            Ok(client_application)
         }));
     }
 
     let mut results: Vec<ClientApplication> = Vec::new();
     for task in tasks {
         match task.await {
-            Ok(system) => results.push(system),
+            Ok(client) => match client {
+                Ok(data) => results.push(data),
+                Err(_) => continue,
+            },
             Err(err) => {
                 log!(
                     LogLevel::Error,
@@ -307,7 +318,7 @@ pub async fn resolve_client_applications(config: &AppConfig) -> Result<(), Error
 
     let mut client_application_array_write_lock: tokio::sync::RwLockWriteGuard<
         '_,
-        std::collections::HashMap<String, ClientApplication>,
+        std::collections::HashMap<Stringy, ClientApplication>,
     > = CLIENT_APPLICATION_ARRAY.try_write().await?;
 
     for app in results {

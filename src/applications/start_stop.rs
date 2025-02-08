@@ -31,48 +31,48 @@ pub async fn stop_application(app_id: &Stringy) -> Result<(), ErrorArrayItem> {
     > = APP_STATUS_ARRAY.try_write().await?;
 
     let app_status = match app_status_array_write_lock.get_mut(&app_id) {
-        Some(app_data) => {
-            app_data.state.status = Status::Stopping;
-            Some(app_data)
+        Some(app) => {
+            app.app_data.set_status(Status::Stopping);
+            Some(app)
         }
         None => None, // couldn't find
     };
 
     match app_status {
-        Some(app_data) => {
+        Some(app) => {
             // Determine if it's a system app
-            let child: Option<SupervisedProcesses> = if app_data.state.system_application {
+            let child: Option<SupervisedProcesses> = if app.app_data.is_system_application(){
                 let mut lock = SYSTEM_APPLICATION_HANDLER.try_write().await?;
                 log!(
                     LogLevel::Trace,
                     "{} Dropped from handler for termination",
-                    app_data.app_id
+                    app.app_id
                 );
-                lock.remove(&app_data.app_id.to_string())
+                lock.remove(&app.app_id)
             } else {
                 let mut lock = CLIENT_APPLICATION_HANDLER.try_write().await?;
                 log!(
                     LogLevel::Trace,
                     "{} Dropped from handler for termination",
-                    app_data.app_id
+                    app.app_id
                 );
-                lock.remove(&app_data.app_id.to_string())
+                lock.remove(&app.app_id)
             };
 
             if let Some(child) = child {
                 match child {
                     SupervisedProcesses::Child(supervised_child) => {
-                        app_data.state.status = Status::Stopped;
-                        app_data.metrics = None;
-                        app_data.uptime = None;
+                        app.app_data.set_status(Status::Stopped);
+                        app.metrics = None;
+                        app.uptime = None;
                         drop(app_status_array_write_lock);
                         send_stop(supervised_child.get_pid().await? as i32)?;
                         return Ok(());
                     }
                     SupervisedProcesses::Process(supervised_process) => {
-                        app_data.state.status = Status::Stopped;
-                        app_data.metrics = None;
-                        app_data.uptime = None;
+                        app.app_data.set_status(Status::Stopped);
+                        app.metrics = None;
+                        app.uptime = None;
                         drop(app_status_array_write_lock);
                         send_stop(supervised_process.get_pid())?;
                         return Ok(());
@@ -116,17 +116,17 @@ pub async fn reload_application(app_id: &Stringy) -> Result<(), ErrorArrayItem> 
     > = APP_STATUS_ARRAY.try_write().await?;
 
     let app_status = match app_status_array_write_lock.get_mut(&app_id) {
-        Some(app_data) => {
-            app_data.state.status = Status::Stopping;
-            Some(app_data)
+        Some(app) => {
+            app.app_data.set_status(Status::Stopping);
+            Some(app)
         }
         None => None, // couldn't find
     };
 
     match app_status {
-        Some(status) => {
+        Some(app) => {
             let lock = CLIENT_APPLICATION_HANDLER.try_read().await?;
-            if let Some(child) = lock.get(&status.app_id.to_string()) {
+            if let Some(child) = lock.get(&app.app_id) {
                 match child {
                     SupervisedProcesses::Child(supervised_child) => {
                         let pid = supervised_child.get_pid().await?;
@@ -142,7 +142,7 @@ pub async fn reload_application(app_id: &Stringy) -> Result<(), ErrorArrayItem> 
             };
 
             let lock = SYSTEM_APPLICATION_HANDLER.try_read().await?;
-            if let Some(child) = lock.get(&status.app_id.to_string()) {
+            if let Some(child) = lock.get(&app.app_id) {
                 match child {
                     SupervisedProcesses::Child(supervised_child) => {
                         let pid = supervised_child.get_pid().await?;
@@ -193,14 +193,14 @@ pub async fn start_application(
     let mut app_status_array_write_lock = APP_STATUS_ARRAY.try_write().await?;
 
     // Retrieve or initialize app status
-    let app_status = app_status_array_write_lock.get_mut(app_id).map(|app_data| {
-        app_data.state.status = Status::Starting;
-        app_data
+    let app_status = app_status_array_write_lock.get_mut(app_id).map(|app| {
+        app.app_data.set_status(Status::Starting);
+        app
     });
 
     // Attempt to start the application
-    let app_started = if let Some(ref app_data) = app_status {
-        if app_data.state.system_application {
+    let app_started = if let Some(ref app) = app_status {
+        if app.app_data.is_system_application() {
             start_system_application(app_id, state, state_path).await?
         } else if config.environment != "systemonly" {
             start_client_application(app_id, config, state, state_path).await?
@@ -223,9 +223,9 @@ pub async fn start_application(
 
     // Update application status and handle the result
     if app_started {
-        if let Some(app_data) = app_status {
-            app_data.state.status = Status::Running;
-            app_data.timestamp = current_timestamp();
+        if let Some(app) = app_status {
+            app.app_data.set_status(Status::Running);
+            app.timestamp = current_timestamp();
         }
         Ok(())
     } else {
@@ -251,7 +251,7 @@ async fn start_system_application(
         .clone()
         .into_iter()
     {
-        if app_id.to_string() == sys_app.0 {
+        if app_id == &sys_app.0 {
             spawn_single_application(Application::System(sys_app.1), state, state_path)
                 .await?;
             populate_initial_state_lock(state).await?;
@@ -278,7 +278,7 @@ async fn start_client_application(
         .clone()
         .into_iter()
     {
-        if app_id.to_string() == cli_app.0 {
+        if app_id == &cli_app.0 {
             spawn_single_application(Application::Client(cli_app.1), state, state_path)
                 .await?;
             populate_initial_state_lock(state).await?;

@@ -1,3 +1,5 @@
+use artisan_middleware::config_bundle::ApplicationConfig;
+use artisan_middleware::dusa_collection_utils::functions::{create_hash, truncate};
 use artisan_middleware::dusa_collection_utils::log::LogLevel;
 use artisan_middleware::dusa_collection_utils::rwarc::LockWithTimeout;
 use artisan_middleware::dusa_collection_utils::types::PathType;
@@ -5,6 +7,8 @@ use artisan_middleware::dusa_collection_utils::{errors::ErrorArrayItem, stringy:
 use artisan_middleware::dusa_collection_utils::{
     errors::Errors, functions::current_timestamp, log,
 };
+use artisan_middleware::enviornment::definitions::Enviornment;
+use artisan_middleware::identity::Identifier;
 use artisan_middleware::{
     aggregator::{AppStatus, Status},
     process_manager::{spawn_complex_process, SupervisedChild, SupervisedProcess},
@@ -30,16 +34,18 @@ pub enum SupervisedProcesses {
 pub static APP_STATUS_ARRAY: Lazy<LockWithTimeout<HashMap<Stringy, AppStatus>>> =
     Lazy::new(|| LockWithTimeout::new(HashMap::new()));
 
-pub static SYSTEM_APPLICATION_HANDLER: Lazy<LockWithTimeout<HashMap<String, SupervisedProcesses>>> =
+pub static SYSTEM_APPLICATION_HANDLER: Lazy<
+    LockWithTimeout<HashMap<Stringy, SupervisedProcesses>>,
+> = Lazy::new(|| LockWithTimeout::new(HashMap::new()));
+
+pub static CLIENT_APPLICATION_HANDLER: Lazy<
+    LockWithTimeout<HashMap<Stringy, SupervisedProcesses>>,
+> = Lazy::new(|| LockWithTimeout::new(HashMap::new()));
+
+pub static CLIENT_APPLICATION_ARRAY: Lazy<LockWithTimeout<HashMap<Stringy, ClientApplication>>> =
     Lazy::new(|| LockWithTimeout::new(HashMap::new()));
 
-pub static CLIENT_APPLICATION_HANDLER: Lazy<LockWithTimeout<HashMap<String, SupervisedProcesses>>> =
-    Lazy::new(|| LockWithTimeout::new(HashMap::new()));
-
-pub static CLIENT_APPLICATION_ARRAY: Lazy<LockWithTimeout<HashMap<String, ClientApplication>>> =
-    Lazy::new(|| LockWithTimeout::new(HashMap::new()));
-
-pub static SYSTEM_APPLICATION_ARRAY: Lazy<LockWithTimeout<HashMap<String, SystemApplication>>> =
+pub static SYSTEM_APPLICATION_ARRAY: Lazy<LockWithTimeout<HashMap<Stringy, SystemApplication>>> =
     Lazy::new(|| LockWithTimeout::new(HashMap::new()));
 
 pub async fn _spawn_system_applications(
@@ -64,25 +70,20 @@ pub async fn _spawn_system_applications(
         }
 
         // check if the application is running in a previous life
-        let process = if let Some(app_state) = system_app.1.state {
-            match reclaim_child(app_state.pid).await {
-                Ok(process) => Some(process),
-                Err(err) => {
-                    if err.err_type == Errors::SupervisedChild {
-                        log!(
-                            LogLevel::Trace,
-                            "{} not currently running, Spawning",
-                            &system_app.0
-                        );
-                        None
-                    } else {
-                        return Err(err);
-                    }
+        let process = match reclaim_child(system_app.1.config.get_pid()).await {
+            Ok(process) => Some(process),
+            Err(err) => {
+                if err.err_type == Errors::SupervisedChild {
+                    log!(
+                        LogLevel::Trace,
+                        "{} not currently running, Spawning",
+                        &system_app.0
+                    );
+                    None
+                } else {
+                    return Err(err);
                 }
             }
-        } else {
-            log!(LogLevel::Trace, "{} has no state file", &system_app.0);
-            None
         };
 
         let system_process: SupervisedProcesses = match process {
@@ -174,14 +175,14 @@ pub async fn _spawn_client_applications(
         }
 
         // check if the application is running in a previous life
-        let process: Option<SupervisedProcesses> = if let Some(app_state) = client_app.1.state {
-            match reclaim_child(app_state.pid).await {
+        let process: Option<SupervisedProcesses> =
+            match reclaim_child(client_app.1.config.get_pid()).await {
                 Ok(child_process) => {
                     log!(
                         LogLevel::Info,
                         "{} is already running with PID {}",
                         client_app.0,
-                        app_state.pid
+                        client_app.1.config.get_pid()
                     );
                     Some(SupervisedProcesses::Process(child_process)) // Wrap the reclaimed process
                 }
@@ -197,15 +198,7 @@ pub async fn _spawn_client_applications(
                         return Err(err); // Propagate unexpected errors
                     }
                 }
-            }
-        } else {
-            log!(
-                LogLevel::Trace,
-                "{} has no state file, spawning a new process",
-                client_app.0
-            );
-            None // No state, so the process will need to be spawned
-        };
+            };
 
         // TODO this is where we load and validate the environmental file and source the initlal data
         let client_child: SupervisedProcesses = match process {
@@ -213,20 +206,48 @@ pub async fn _spawn_client_applications(
             None => {
                 // Prepare the command and spawn a new process
                 let mut stub = Command::new(client_app.1.path);
-                let command: &mut Command = match client_app.1.environ {
+                let command: &mut Command = match client_app.1.config.get_enviornmentals() {
                     Some(env) => {
-                        log!(
-                            LogLevel::Info,
-                            "Reading environmental file for: {}",
-                            client_app.0
-                        );
+                        stub = match env {
+                            Enviornment::V1(enviornment_v1) => {
+                                log!(
+                                    LogLevel::Info,
+                                    "Reading environmental file for: {}",
+                                    client_app.0
+                                );
 
-                        let uid_or_default = env.execution_uid.unwrap_or(33);
-                        stub.gid(uid_or_default.into()).uid(uid_or_default.into());
+                                let uid_or_default = enviornment_v1.execution_uid.unwrap_or(33);
+                                stub.gid(uid_or_default.into()).uid(uid_or_default.into());
 
-                        if let Some(path_mod) = env.path_modifier {
-                            stub.env("PATH", path_mod.to_string());
-                        }
+                                if let Some(path_mod) = enviornment_v1.path_modifier {
+                                    stub.env("PATH", path_mod.to_string());
+                                }
+
+                                stub.env("NVM_DIR", "/var/www/.nvm"); // Set NVM_DIR
+
+                                stub
+                            }
+                            Enviornment::V2(enviornment_v2) => {
+                                log!(
+                                    LogLevel::Info,
+                                    "Reading environmental file for: {}",
+                                    client_app.0
+                                );
+
+                                let uid_or_default = enviornment_v2.execution_uid.unwrap_or(33);
+                                stub.gid(uid_or_default.into()).uid(uid_or_default.into());
+
+                                if let Some(path_mod) = enviornment_v2.path_modifier {
+                                    stub.env("PATH", path_mod.to_string());
+                                }
+
+                                stub.env("NVM_DIR", "/var/www/.nvm"); // Set NVM_DIR
+
+                                // ! Actually implement the rest of V2
+
+                                stub
+                            }
+                        };
 
                         &mut stub
                     }
@@ -289,29 +310,20 @@ pub async fn spawn_single_application(
             }
 
             // check if the application is running in a previous life
-            let process = if let Some(app_state) = system_application.state {
-                match reclaim_child(app_state.pid).await {
-                    Ok(process) => Some(process),
-                    Err(err) => {
-                        if err.err_type == Errors::SupervisedChild {
-                            log!(
-                                LogLevel::Trace,
-                                "{} not currently running, Spawning",
-                                &system_application.name
-                            );
-                            None
-                        } else {
-                            return Err(err);
-                        }
+            let process = match reclaim_child(system_application.config.get_pid()).await {
+                Ok(process) => Some(process),
+                Err(err) => {
+                    if err.err_type == Errors::SupervisedChild {
+                        log!(
+                            LogLevel::Trace,
+                            "{} not currently running, Spawning",
+                            &system_application.name
+                        );
+                        None
+                    } else {
+                        return Err(err);
                     }
                 }
-            } else {
-                log!(
-                    LogLevel::Trace,
-                    "{} has no state file",
-                    &system_application.name
-                );
-                None
             };
 
             let system_process: SupervisedProcesses = match process {
@@ -369,7 +381,7 @@ pub async fn spawn_single_application(
             // pushing application into the write lock
             let mut system_handler_write_lock: tokio::sync::RwLockWriteGuard<
                 '_,
-                HashMap<String, SupervisedProcesses>,
+                HashMap<Stringy, SupervisedProcesses>,
             > = SYSTEM_APPLICATION_HANDLER.try_write().await?;
 
             system_handler_write_lock.insert(system_application.name, system_process);
@@ -389,37 +401,28 @@ pub async fn spawn_single_application(
 
             // check if the application is running in a previous life
             let process: Option<SupervisedProcesses> =
-                if let Some(app_state) = client_application.state {
-                    match reclaim_child(app_state.pid).await {
-                        Ok(child_process) => {
+                match reclaim_child(client_application.config.get_pid()).await {
+                    Ok(child_process) => {
+                        log!(
+                            LogLevel::Info,
+                            "{} is already running with PID {}",
+                            client_application.name,
+                            client_application.config.get_pid()
+                        );
+                        Some(SupervisedProcesses::Process(child_process)) // Wrap the reclaimed process
+                    }
+                    Err(err) => {
+                        if err.err_type == Errors::SupervisedChild {
                             log!(
-                                LogLevel::Info,
-                                "{} is already running with PID {}",
-                                client_application.name,
-                                app_state.pid
+                                LogLevel::Trace,
+                                "{} not currently running, spawning a new process",
+                                client_application.name
                             );
-                            Some(SupervisedProcesses::Process(child_process)) // Wrap the reclaimed process
-                        }
-                        Err(err) => {
-                            if err.err_type == Errors::SupervisedChild {
-                                log!(
-                                    LogLevel::Trace,
-                                    "{} not currently running, spawning a new process",
-                                    client_application.name
-                                );
-                                None // Explicitly indicate that the process needs to be spawned
-                            } else {
-                                return Err(err); // Propagate unexpected errors
-                            }
+                            None // Explicitly indicate that the process needs to be spawned
+                        } else {
+                            return Err(err); // Propagate unexpected errors
                         }
                     }
-                } else {
-                    log!(
-                        LogLevel::Trace,
-                        "{} has no state file, spawning a new process",
-                        client_application.name
-                    );
-                    None // No state, so the process will need to be spawned
                 };
 
             let client_child: SupervisedProcesses = match process {
@@ -427,20 +430,49 @@ pub async fn spawn_single_application(
                 None => {
                     // Prepare the command and spawn a new process
                     let mut stub = Command::new(client_application.path);
-                    let command: &mut Command = match client_application.environ {
+                    let command: &mut Command = match client_application.config.get_enviornmentals()
+                    {
                         Some(env) => {
-                            log!(
-                                LogLevel::Info,
-                                "Reading environmental file for: {}",
-                                client_application.name
-                            );
+                            stub = match env {
+                                Enviornment::V1(enviornment_v1) => {
+                                    log!(
+                                        LogLevel::Info,
+                                        "Reading environmental file for: {}",
+                                        client_application.name
+                                    );
 
-                            let uid_or_default = env.execution_uid.unwrap_or(33);
-                            stub.gid(uid_or_default.into()).uid(uid_or_default.into());
+                                    let uid_or_default = enviornment_v1.execution_uid.unwrap_or(33);
+                                    stub.gid(uid_or_default.into()).uid(uid_or_default.into());
 
-                            if let Some(path_mod) = env.path_modifier {
-                                stub.env("PATH", path_mod.to_string());
-                            }
+                                    if let Some(path_mod) = enviornment_v1.path_modifier {
+                                        stub.env("PATH", path_mod.to_string());
+                                    }
+
+                                    stub.env("NVM_DIR", "/var/www/.nvm"); // Set NVM_DIR
+
+                                    stub
+                                }
+                                Enviornment::V2(enviornment_v2) => {
+                                    log!(
+                                        LogLevel::Info,
+                                        "Reading environmental file for: {}",
+                                        client_application.name
+                                    );
+
+                                    let uid_or_default = enviornment_v2.execution_uid.unwrap_or(33);
+                                    stub.gid(uid_or_default.into()).uid(uid_or_default.into());
+
+                                    if let Some(path_mod) = enviornment_v2.path_modifier {
+                                        stub.env("PATH", path_mod.to_string());
+                                    }
+
+                                    stub.env("NVM_DIR", "/var/www/.nvm"); // Set NVM_DIR
+
+                                    // ! Actually implement the rest of V2
+
+                                    stub
+                                }
+                            };
 
                             &mut stub
                         }
@@ -481,7 +513,8 @@ pub async fn spawn_single_application(
             // pushing application into the write lock
             let mut client_application_handler_write_lock =
                 CLIENT_APPLICATION_HANDLER.try_write().await?;
-            client_application_handler_write_lock.insert(client_application.name, client_child);
+            client_application_handler_write_lock
+                .insert(client_application.name.into(), client_child);
             drop(client_application_handler_write_lock);
 
             return Ok(());
@@ -498,7 +531,7 @@ pub async fn populate_initial_state_lock(state: &mut AppState) -> Result<(), Err
         .await?;
 
     let mut applications: Vec<Application> = Vec::new();
-    let mut app_states: Vec<(String, Option<AppState>, bool)> = Vec::new();
+    let mut app_states: Vec<(Stringy, ApplicationConfig, bool)> = Vec::new();
 
     // working on the system applications
     {
@@ -523,58 +556,64 @@ pub async fn populate_initial_state_lock(state: &mut AppState) -> Result<(), Err
     for app in applications {
         match app {
             Application::System(system_application) => {
-                if let Some(state) = system_application.state {
-                    app_states.push((system_application.name, Some(state), true));
-                } else {
-                    log!(
-                        LogLevel::Trace,
-                        "Skipping: {}, no state file found",
-                        system_application.name
-                    );
-                    app_states.push((system_application.name, None, true));
-                }
+                app_states.push((
+                    system_application.name,
+                    system_application.config.clone(),
+                    true,
+                ));
             }
             Application::Client(client_application) => {
-                if let Some(state) = client_application.state {
-                    app_states.push((client_application.name, Some(state), false));
-                } else {
-                    log!(
-                        LogLevel::Trace,
-                        "Skipping: {}, no state file found",
-                        client_application.name
-                    );
-                    app_states.push((client_application.name, None, false));
-                }
+                app_states.push((
+                    client_application.name,
+                    client_application.config.clone(),
+                    false,
+                ));
             }
         }
     }
 
     for app in app_states {
-        let status = match app.1 {
-            Some(state) => AppStatus {
-                app_id: Stringy::from(&state.name),
-                uptime: Some(current_timestamp() - state.last_updated),
-                metrics: None,
-                timestamp: state.last_updated,
-                expected_status: Status::Running,
-                git_id: state.config.app_name.replace("ais_", "").into(),
-                state,
-            },
-            None => {
-                log!(LogLevel::Error, "{}, has no state file, skipping", app.0);
-                continue;
+
+        let identity: Identifier = Identifier::load_from_file()?;
+        
+        let app_id: Stringy = {
+            let data = format!(
+                "{}-{}",
+                identity.id, app.0
+            );
+            let hash = create_hash(data);
+            truncate(&*hash, 20).to_owned()
+        };
+
+        let git_id: Stringy = {
+            match app.1.is_system_application() {
+                true => "".into(),
+                false => {
+                    app.0.replace("ais_", "").into()
+                },
             }
         };
 
-        if let Some(data) =
-            application_status_array_write_lock.insert(Stringy::from(&*status.app_id), status)
-        {
-            log!(
-                LogLevel::Debug,
-                "Updated {} in the application array",
-                data.app_id
-            );
-        }
+        let expected_status = {
+            match app.1.is_system_application() {
+                true => Status::Running,
+                false => Status::Idle
+            }
+        };
+
+        let app_status: AppStatus = AppStatus {
+            app_id,
+            git_id,
+            app_data: app.1.clone(),
+            uptime: None,
+            metrics: None,
+            timestamp: current_timestamp(),
+            expected_status,
+        };
+
+        if let Some(old) = application_status_array_write_lock.insert(app.0, app_status) {
+            log!(LogLevel::Debug, "Updated? {}", old.app_id)
+        };
     }
 
     Ok(())
