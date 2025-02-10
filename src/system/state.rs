@@ -1,7 +1,14 @@
-use artisan_middleware::{config::AppConfig, dusa_collection_utils::types::pathtype::PathType, state_persistence::{self, AppState, StatePersistence}};
-use artisan_middleware::dusa_collection_utils::{errors::{ErrorArrayItem, Errors}, functions::current_timestamp};
-use artisan_middleware::dusa_collection_utils::logger::LogLevel;
 use artisan_middleware::dusa_collection_utils::log;
+use artisan_middleware::dusa_collection_utils::logger::LogLevel;
+use artisan_middleware::dusa_collection_utils::{
+    errors::{ErrorArrayItem, Errors},
+    functions::current_timestamp,
+};
+use artisan_middleware::{
+    config::AppConfig,
+    dusa_collection_utils::types::pathtype::PathType,
+    state_persistence::{self, AppState, StatePersistence},
+};
 
 pub fn get_state_path(config: &AppConfig) -> PathType {
     state_persistence::StatePersistence::get_state_path(&config)
@@ -18,7 +25,6 @@ pub async fn save_state(state: &mut AppState, path: &PathType) {
         ));
     }
 }
-
 
 // Update the state file in the case of a un handled error
 pub async fn _wind_down_state(state: &mut AppState, state_path: &PathType) {

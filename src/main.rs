@@ -1,24 +1,17 @@
 use applications::{
-    child::{
-        populate_initial_state_lock, APP_STATUS_ARRAY, CLIENT_APPLICATION_HANDLER,
-        SYSTEM_APPLICATION_HANDLER,
-    },
+    child::{populate_initial_state_lock, CLIENT_APPLICATION_HANDLER, SYSTEM_APPLICATION_HANDLER},
     monitor::{
         handle_dead_applications, handle_new_client_applications, handle_new_system_applications,
         monitor_application_resource_usage, update_client_state, update_system_state,
     },
     resolve::{resolve_client_applications, resolve_system_applications},
 };
-use artisan_middleware::{
-    aggregator::load_registered_apps,
-    cli::clean_screen,
-    dusa_collection_utils::{
-        errors::ErrorArrayItem,
-        logger::LogLevel,
-        types::{pathtype::PathType, rwarc::LockWithTimeout, stringy::Stringy},
-    },
+use artisan_middleware::dusa_collection_utils::log;
+use artisan_middleware::dusa_collection_utils::{
+    errors::ErrorArrayItem,
+    logger::LogLevel,
+    types::{pathtype::PathType, rwarc::LockWithTimeout, stringy::Stringy},
 };
-use artisan_middleware::{aggregator::save_registered_apps, dusa_collection_utils::log};
 use artisan_middleware::{aggregator::AppStatus, config::AppConfig, state_persistence::AppState};
 use network::process_tcp;
 use std::{collections::HashMap, sync::Arc, time::Duration};

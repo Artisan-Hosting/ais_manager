@@ -1,14 +1,11 @@
 use std::io;
 
 use artisan_middleware::aggregator::AppStatus;
-use artisan_middleware::dusa_collection_utils::functions::current_timestamp;
+use artisan_middleware::dusa_collection_utils::errors::{ErrorArrayItem, Errors};
 use artisan_middleware::dusa_collection_utils::log;
 use artisan_middleware::dusa_collection_utils::logger::LogLevel;
 use artisan_middleware::dusa_collection_utils::types::pathtype::PathType;
 use artisan_middleware::dusa_collection_utils::types::stringy::Stringy;
-use artisan_middleware::dusa_collection_utils::{
-    errors::{ErrorArrayItem, Errors},
-};
 use artisan_middleware::systemd::SystemdService;
 use artisan_middleware::{aggregator::Status, config::AppConfig, state_persistence::AppState};
 use nix::libc::kill;
@@ -43,7 +40,7 @@ pub async fn stop_application(app_id: &Stringy) -> Result<(), ErrorArrayItem> {
     match app_status {
         Some(app) => {
             // Determine if it's a system app
-            let child: Option<SupervisedProcesses> = if app.app_data.is_system_application(){
+            let child: Option<SupervisedProcesses> = if app.app_data.is_system_application() {
                 let mut lock = SYSTEM_APPLICATION_HANDLER.try_write().await?;
                 log!(
                     LogLevel::Trace,
@@ -199,25 +196,28 @@ pub async fn start_application(
         Some(app) => {
             app.app_data.set_status(Status::Starting);
             app
-        },
+        }
         None => {
-            let error = ErrorArrayItem::new(Errors::NotFound, format!("State data for: {} not loaded", app_id));
-            return Err(error)
-        },
+            let error = ErrorArrayItem::new(
+                Errors::NotFound,
+                format!("State data for: {} not loaded", app_id),
+            );
+            return Err(error);
+        }
     };
 
     let systemd_app: SystemdService = match SystemdService::new(&app.app_data.get_name()) {
         Ok(systemd) => systemd,
         Err(err) => {
             return Err(ErrorArrayItem::from(err));
-        },
+        }
     };
 
     let _is_active = match systemd_app.is_active() {
         Ok(b) => b,
         Err(err) => {
             return Err(ErrorArrayItem::new(Errors::NotFound, err.to_string()));
-        },
+        }
     };
 
     // TODO ensure we kill all instances before starting a new one
@@ -234,8 +234,8 @@ pub async fn start_application(
         return Err(ErrorArrayItem::new(Errors::Unauthorized, err.to_string()));
     }
 
-    Ok(())    
-    
+    Ok(())
+
     // // Attempt to start the application
     // let app_started = if let Some(ref app) = app_status {
     //     if app.app_data.is_system_application() {
@@ -275,7 +275,7 @@ pub async fn start_application(
 }
 
 /// Helper to start system applications
-async fn start_system_application(
+async fn _start_system_application(
     app_id: &Stringy,
     state: &mut AppState,
     state_path: &PathType,
@@ -290,8 +290,7 @@ async fn start_system_application(
         .into_iter()
     {
         if app_id == &sys_app.0 {
-            spawn_single_application(Application::System(sys_app.1), state, state_path)
-                .await?;
+            spawn_single_application(Application::System(sys_app.1), state, state_path).await?;
             populate_initial_state_lock(state).await?;
             save_state(state, state_path).await;
             return Ok(true);
@@ -301,7 +300,7 @@ async fn start_system_application(
 }
 
 /// Helper to start client applications
-async fn start_client_application(
+async fn _start_client_application(
     app_id: &Stringy,
     config: &AppConfig,
     state: &mut AppState,
@@ -317,8 +316,7 @@ async fn start_client_application(
         .into_iter()
     {
         if app_id == &cli_app.0 {
-            spawn_single_application(Application::Client(cli_app.1), state, state_path)
-                .await?;
+            spawn_single_application(Application::Client(cli_app.1), state, state_path).await?;
             populate_initial_state_lock(state).await?;
             save_state(state, state_path).await;
             return Ok(true);

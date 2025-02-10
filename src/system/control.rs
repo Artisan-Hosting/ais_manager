@@ -2,16 +2,15 @@
 
 use std::{sync::Arc, time::Duration};
 
-use crate::applications::child::{APP_STATUS_ARRAY, CLIENT_APPLICATION_HANDLER, SYSTEM_APPLICATION_HANDLER};
+use crate::applications::child::{
+    APP_STATUS_ARRAY, CLIENT_APPLICATION_HANDLER, SYSTEM_APPLICATION_HANDLER,
+};
 use crate::applications::resolve::{resolve_client_applications, resolve_system_applications};
 use artisan_middleware::aggregator::{save_registered_apps, AppStatus};
 use artisan_middleware::dusa_collection_utils::logger::LogLevel;
 use artisan_middleware::dusa_collection_utils::types::rwarc::LockWithTimeout;
 use artisan_middleware::state_persistence::AppState;
-use artisan_middleware::{
-    control::ToggleControl,
-    dusa_collection_utils::errors::ErrorArrayItem,
-};
+use artisan_middleware::{control::ToggleControl, dusa_collection_utils::errors::ErrorArrayItem};
 use artisan_middleware::{dusa_collection_utils::log, identity::Identifier};
 use once_cell::sync::Lazy;
 use tokio::sync::Notify;
@@ -186,7 +185,7 @@ impl Controls {
 
                         if let Err(err) = resolve_system_applications().await {
                             log!(LogLevel::Error, "{}", err);
-                        };                      
+                        };
 
                         log!(LogLevel::Info, "Reloaded !");
                         self.resume_all_controls().await;
@@ -230,25 +229,25 @@ impl Controls {
                                 continue;
                             }
                         };
-        
+
                         let mut app_array: Vec<AppStatus> = Vec::new();
-        
+
                         app_status_array_read_lock
                             .clone()
                             .into_iter()
                             .for_each(|app| {
                                 app_array.push(app.1);
                             });
-        
+
                         for app in app_array.clone() {
                             log!(LogLevel::Debug, "Status: {}", app);
                         }
-        
+
                         if let Err(err) = save_registered_apps(&app_array).await {
                             log!(LogLevel::Error, "{}", err);
                             std::process::exit(1)
                         }
-                        
+
                         log!(LogLevel::Info, "Bye~");
                         std::process::exit(0)
                     }

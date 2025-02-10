@@ -10,5 +10,5 @@ pub mod state;
 // portal logic
 pub mod portal;
 
-// manager data function 
+// manager data function
 pub mod manager;

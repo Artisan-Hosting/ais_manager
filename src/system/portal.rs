@@ -2,9 +2,7 @@ use artisan_middleware::dusa_collection_utils::log;
 use artisan_middleware::dusa_collection_utils::logger::LogLevel;
 use artisan_middleware::{
     config::AppConfig,
-    dusa_collection_utils::{
-        errors::{ErrorArrayItem, Errors},
-    },
+    dusa_collection_utils::errors::{ErrorArrayItem, Errors},
     identity::Identifier,
     network::resolve_url,
     portal::{ManagerData, PortalMessage},
@@ -85,15 +83,9 @@ async fn handle_identity_request(stream: &mut TcpStream) -> Result<(), ErrorArra
     let id: Option<Identifier> = load_identifier().await;
     let identity: PortalMessage = PortalMessage::IdResponse(id.clone());
 
-    let flags = if id.is_some() {
-        Flags::COMPRESSED | Flags::ENCRYPTED
-    } else {
-        Flags::NONE
-    };
-
     match send_message::<TcpStream, PortalMessage, PortalMessage>(
         stream,
-        flags,
+        Flags::ENCRYPTED | Flags::COMPRESSED,
         identity,
         Proto::TCP,
         true,
@@ -208,8 +200,7 @@ async fn portal_registration(
 
     match send_message::<TcpStream, PortalMessage, PortalMessage>(
         &mut stream,
-        // Flags::COMPRESSED | Flags::ENCRYPTED,
-        Flags::NONE,   // TODO send this encrypted
+        Flags::ENCRYPTED | Flags::COMPRESSED,
         message,
         Proto::TCP,
         false,

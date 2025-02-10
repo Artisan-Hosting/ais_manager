@@ -1,10 +1,15 @@
-use artisan_middleware::{
-    aggregator::Status, config::AppConfig, dusa_collection_utils::types::{pathtype::PathType, stringy::Stringy}, state_persistence::{AppState, StatePersistence}, timestamp::current_timestamp, version::{aml_version, str_to_version}
-};
 use artisan_middleware::dusa_collection_utils::{
-    logger::{set_log_level, LogLevel},
     log,
+    logger::{set_log_level, LogLevel},
     version::{SoftwareVersion, Version, VersionCode},
+};
+use artisan_middleware::{
+    aggregator::Status,
+    config::AppConfig,
+    dusa_collection_utils::types::{pathtype::PathType, stringy::Stringy},
+    state_persistence::{AppState, StatePersistence},
+    timestamp::current_timestamp,
+    version::{aml_version, str_to_version},
 };
 
 use crate::system::state::save_state;
@@ -27,10 +32,9 @@ pub fn get_config() -> AppConfig {
     }
 }
 
-
 pub async fn generate_state(config: &AppConfig) -> AppState {
     let state_path: PathType = get_state_path(&config);
-    
+
     match StatePersistence::load_state(&state_path).await {
         Ok(mut loaded_data) => {
             log!(LogLevel::Info, "Loaded previous state data");
@@ -44,8 +48,9 @@ pub async fn generate_state(config: &AppConfig) -> AppState {
             loaded_data.stared_at = current_timestamp();
             loaded_data.version = {
                 let library_version: Version = aml_version();
-                let software_version: Version = str_to_version(env!("CARGO_PKG_VERSION"), Some(VersionCode::Production));
-                
+                let software_version: Version =
+                    str_to_version(env!("CARGO_PKG_VERSION"), Some(VersionCode::Production));
+
                 SoftwareVersion {
                     application: software_version,
                     library: library_version,
@@ -68,8 +73,9 @@ pub async fn generate_state(config: &AppConfig) -> AppState {
                 name: env!("CARGO_PKG_NAME").to_owned(),
                 version: {
                     let library_version: Version = aml_version();
-                    let software_version: Version = str_to_version(env!("CARGO_PKG_VERSION"), Some(VersionCode::Production));
-                    
+                    let software_version: Version =
+                        str_to_version(env!("CARGO_PKG_VERSION"), Some(VersionCode::Production));
+
                     SoftwareVersion {
                         application: software_version,
                         library: library_version,

@@ -1,14 +1,21 @@
-use std::{net::SocketAddr, sync::Arc, time::Duration};
-use artisan_middleware::{
-    aggregator::{AppMessage, Command, CommandResponse, CommandType}, config::AppConfig, dusa_collection_utils::{logger::LogLevel, types::{pathtype::PathType, stringy::Stringy}}, portal::ManagerData, state_persistence::AppState
-};
 use artisan_middleware::dusa_collection_utils::{errors::ErrorArrayItem, log};
+use artisan_middleware::{
+    aggregator::{AppMessage, Command, CommandResponse, CommandType},
+    config::AppConfig,
+    dusa_collection_utils::{
+        logger::LogLevel,
+        types::{pathtype::PathType, stringy::Stringy},
+    },
+    portal::ManagerData,
+    state_persistence::AppState,
+};
 use simple_comms::{
     network::send_receive::{send_data, send_empty_err},
     protocol::{
         flags::Flags, header::EOL, io_helpers::read_until, message::ProtocolMessage, proto::Proto,
     },
 };
+use std::{net::SocketAddr, sync::Arc, time::Duration};
 use tokio::net::TcpStream;
 
 use crate::{
@@ -37,7 +44,18 @@ pub async fn process_tcp(
         ProtocolMessage::<AppMessage>::from_bytes(&buffer).await?;
 
     let recieved_payload = recieved_message.get_payload().await;
-    let _recieved_header = recieved_message.get_header().await;
+
+    // TODO Security ?
+    // let recieved_header = recieved_message.get_header().await;
+    // let flags = Flags::from_bits_truncate(recieved_header.flags);
+    // if !flags.contains(Flags::ENCRYPTED | Flags::SIGNATURE) {
+    //     log!(LogLevel::Trace, "Asking client to resend, they sent a insecure command");
+    //     let mut message = ProtocolMessage::new(Flags::NONE, ())?;
+    //     message.header.reserved = Flags::OPTIMIZED.bits();
+    //     message.header.status = simple_comms::protocol::status::ProtocolStatus::SIDEGRADE.bits();
+    //     let message_bytes: Vec<u8> = message.format().await?;
+    //     send_data(&mut connection.0, message_bytes, proto).await?;
+    // }
 
     match recieved_payload {
         AppMessage::Command(command) => {
@@ -45,8 +63,7 @@ pub async fn process_tcp(
             {
                 Ok(data) => {
                     let message: ProtocolMessage<AppMessage> =
-                        // ProtocolMessage::new(Flags::COMPRESSED | Flags::ENCRYPTED, data)?;
-                        ProtocolMessage::new(Flags::NONE, data)?;
+                        ProtocolMessage::new(Flags::ENCRYPTED | Flags::COMPRESSED, data)?;
                     let message_bytes: Vec<u8> = message.format().await?;
                     send_data(&mut connection.0, message_bytes, proto).await?;
                 }

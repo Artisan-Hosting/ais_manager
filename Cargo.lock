@@ -86,7 +86,7 @@ dependencies = [
 
 [[package]]
 name = "ais_manager"
-version = "1.0.0"
+version = "2.0.0"
 dependencies = [
  "artisan_middleware",
  "colored 3.0.0",
@@ -120,7 +120,9 @@ dependencies = [
 
 [[package]]
 name = "artisan_middleware"
-version = "4.3.3"
+version = "5.0.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "b1986bc1567259399892362d78f7970c9ebb657fc8e84e8a9ca6e6343486467d"
 dependencies = [
  "aes-gcm",
  "chrono",
@@ -2351,9 +2353,9 @@ dependencies = [
 
 [[package]]
 name = "simple_comms"
-version = "1.1.1"
+version = "1.2.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "8377224d4e925dfcbc1b19218e457fa593b161e8c21859eb59dadbf6408b2d35"
+checksum = "e07c71d45b9439fac1fcde0f02e141d0ed4b589c16b702db5b7c50331b0a0de5"
 dependencies = [
  "aes-gcm",
  "bincode",

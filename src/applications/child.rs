@@ -1,13 +1,11 @@
 use artisan_middleware::config_bundle::ApplicationConfig;
+use artisan_middleware::dusa_collection_utils::errors::ErrorArrayItem;
 use artisan_middleware::dusa_collection_utils::functions::{create_hash, truncate};
 use artisan_middleware::dusa_collection_utils::logger::LogLevel;
 use artisan_middleware::dusa_collection_utils::types::pathtype::PathType;
 use artisan_middleware::dusa_collection_utils::types::rwarc::LockWithTimeout;
 use artisan_middleware::dusa_collection_utils::types::stringy::Stringy;
-use artisan_middleware::dusa_collection_utils::{errors::ErrorArrayItem};
-use artisan_middleware::dusa_collection_utils::{
-    errors::Errors, functions::current_timestamp, log,
-};
+use artisan_middleware::dusa_collection_utils::{errors::Errors, log};
 use artisan_middleware::enviornment::definitions::Enviornment;
 use artisan_middleware::identity::Identifier;
 use artisan_middleware::{
@@ -16,7 +14,6 @@ use artisan_middleware::{
     state_persistence::AppState,
 };
 use once_cell::sync::Lazy;
-use tokio::time::sleep;
 use std::{collections::HashMap, time::Duration};
 use tokio::process::Command;
 
@@ -295,6 +292,7 @@ pub async fn _spawn_client_applications(
     Ok(())
 }
 
+#[allow(unused)]
 pub async fn spawn_single_application(
     application: Application,
     state: &mut AppState,
@@ -575,14 +573,10 @@ pub async fn populate_initial_state_lock(state: &mut AppState) -> Result<(), Err
     }
 
     for app in app_states {
-
         let identity: Identifier = Identifier::load_from_file()?;
-        
+
         let app_id: Stringy = {
-            let data = format!(
-                "{}-{}",
-                identity.id, app.0
-            );
+            let data = format!("{}-{}", identity.id, app.0);
             let hash = create_hash(data);
             truncate(&*hash, 20).to_owned()
         };
@@ -590,16 +584,14 @@ pub async fn populate_initial_state_lock(state: &mut AppState) -> Result<(), Err
         let git_id: Stringy = {
             match app.1.is_system_application() {
                 true => "".into(),
-                false => {
-                    app.0.replace("ais_", "").into()
-                },
+                false => app.0.replace("ais_", "").into(),
             }
         };
 
         let expected_status = {
             match app.1.is_system_application() {
                 true => Status::Running,
-                false => Status::Idle
+                false => Status::Idle,
             }
         };
 
@@ -616,7 +608,11 @@ pub async fn populate_initial_state_lock(state: &mut AppState) -> Result<(), Err
         if let Some(old) = application_status_array_write_lock.insert(app.0, app_status.clone()) {
             log!(LogLevel::Debug, "Updated? {}", old.app_id)
         } else {
-            log!(LogLevel::Debug, "Inserted? {}", app_status.app_data.get_name());
+            log!(
+                LogLevel::Debug,
+                "Inserted? {}",
+                app_status.app_data.get_name()
+            );
         };
     }
 
