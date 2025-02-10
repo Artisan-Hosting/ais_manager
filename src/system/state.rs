@@ -1,6 +1,6 @@
-use artisan_middleware::{config::AppConfig, state_persistence::{self, AppState, StatePersistence}};
-use artisan_middleware::dusa_collection_utils::{errors::{ErrorArrayItem, Errors}, functions::current_timestamp, types::PathType};
-use artisan_middleware::dusa_collection_utils::log::LogLevel;
+use artisan_middleware::{config::AppConfig, dusa_collection_utils::types::pathtype::PathType, state_persistence::{self, AppState, StatePersistence}};
+use artisan_middleware::dusa_collection_utils::{errors::{ErrorArrayItem, Errors}, functions::current_timestamp};
+use artisan_middleware::dusa_collection_utils::logger::LogLevel;
 use artisan_middleware::dusa_collection_utils::log;
 
 pub fn get_state_path(config: &AppConfig) -> PathType {

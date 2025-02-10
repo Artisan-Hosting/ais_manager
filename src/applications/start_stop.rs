@@ -1,13 +1,15 @@
 use std::io;
 
+use artisan_middleware::aggregator::AppStatus;
 use artisan_middleware::dusa_collection_utils::functions::current_timestamp;
 use artisan_middleware::dusa_collection_utils::log;
+use artisan_middleware::dusa_collection_utils::logger::LogLevel;
+use artisan_middleware::dusa_collection_utils::types::pathtype::PathType;
+use artisan_middleware::dusa_collection_utils::types::stringy::Stringy;
 use artisan_middleware::dusa_collection_utils::{
     errors::{ErrorArrayItem, Errors},
-    log::LogLevel,
-    stringy::Stringy,
-    types::PathType,
 };
+use artisan_middleware::systemd::SystemdService;
 use artisan_middleware::{aggregator::Status, config::AppConfig, state_persistence::AppState};
 use nix::libc::kill;
 
@@ -48,7 +50,7 @@ pub async fn stop_application(app_id: &Stringy) -> Result<(), ErrorArrayItem> {
                     "{} Dropped from handler for termination",
                     app.app_id
                 );
-                lock.remove(&app.app_id)
+                lock.remove(&app.app_data.get_name().into())
             } else {
                 let mut lock = CLIENT_APPLICATION_HANDLER.try_write().await?;
                 log!(
@@ -56,7 +58,7 @@ pub async fn stop_application(app_id: &Stringy) -> Result<(), ErrorArrayItem> {
                     "{} Dropped from handler for termination",
                     app.app_id
                 );
-                lock.remove(&app.app_id)
+                lock.remove(&app.app_data.get_name().into())
             };
 
             if let Some(child) = child {
@@ -99,7 +101,7 @@ pub async fn stop_application(app_id: &Stringy) -> Result<(), ErrorArrayItem> {
 
 fn send_stop(pid: i32) -> Result<(), ErrorArrayItem> {
     // SIGUSR1 = 10
-    let result: i32 = unsafe { kill(pid, 10) };
+    let result: i32 = unsafe { kill(pid, 9) };
 
     if result == 0 {
         return Ok(());
@@ -186,54 +188,90 @@ fn send_reload(pid: i32) -> Result<(), ErrorArrayItem> {
 
 pub async fn start_application(
     app_id: &Stringy,
-    state: &mut AppState,
-    state_path: &PathType,
-    config: &AppConfig,
+    _state: &mut AppState,
+    _state_path: &PathType,
+    _config: &AppConfig,
 ) -> Result<(), ErrorArrayItem> {
     let mut app_status_array_write_lock = APP_STATUS_ARRAY.try_write().await?;
 
     // Retrieve or initialize app status
-    let app_status = app_status_array_write_lock.get_mut(app_id).map(|app| {
-        app.app_data.set_status(Status::Starting);
-        app
-    });
-
-    // Attempt to start the application
-    let app_started = if let Some(ref app) = app_status {
-        if app.app_data.is_system_application() {
-            start_system_application(app_id, state, state_path).await?
-        } else if config.environment != "systemonly" {
-            start_client_application(app_id, config, state, state_path).await?
-        } else {
-            log!(
-                LogLevel::Warn,
-                "Tried to start a client application in safe mode"
-            );
-            return Ok(());
-        }
-    } else {
-        let sys_started = start_system_application(app_id, state, state_path).await?;
-        let cli_started = if config.environment != "systemonly" {
-            start_client_application(app_id, config, state, state_path).await?
-        } else {
-            false
-        };
-        sys_started || cli_started
+    let app: &mut AppStatus = match app_status_array_write_lock.get_mut(app_id) {
+        Some(app) => {
+            app.app_data.set_status(Status::Starting);
+            app
+        },
+        None => {
+            let error = ErrorArrayItem::new(Errors::NotFound, format!("State data for: {} not loaded", app_id));
+            return Err(error)
+        },
     };
 
-    // Update application status and handle the result
-    if app_started {
-        if let Some(app) = app_status {
-            app.app_data.set_status(Status::Running);
-            app.timestamp = current_timestamp();
-        }
-        Ok(())
-    } else {
-        Err(ErrorArrayItem::new(
-            Errors::NotFound,
-            format!("{}, Not found on the system", app_id),
-        ))
+    let systemd_app: SystemdService = match SystemdService::new(&app.app_data.get_name()) {
+        Ok(systemd) => systemd,
+        Err(err) => {
+            return Err(ErrorArrayItem::from(err));
+        },
+    };
+
+    let _is_active = match systemd_app.is_active() {
+        Ok(b) => b,
+        Err(err) => {
+            return Err(ErrorArrayItem::new(Errors::NotFound, err.to_string()));
+        },
+    };
+
+    // TODO ensure we kill all instances before starting a new one
+    // match is_active {
+    //     true => ,
+    //     false => {
+    //         if let Err(err) = systemd_app.start() {
+
+    //         }
+    //     },
+    // }
+
+    if let Err(err) = systemd_app.start() {
+        return Err(ErrorArrayItem::new(Errors::Unauthorized, err.to_string()));
     }
+
+    Ok(())    
+    
+    // // Attempt to start the application
+    // let app_started = if let Some(ref app) = app_status {
+    //     if app.app_data.is_system_application() {
+    //         start_system_application(app_id, state, state_path).await?
+    //     } else if config.environment != "systemonly" {
+    //         start_client_application(app_id, config, state, state_path).await?
+    //     } else {
+    //         log!(
+    //             LogLevel::Warn,
+    //             "Tried to start a client application in safe mode"
+    //         );
+    //         return Ok(());
+    //     }
+    // } else {
+    //     let sys_started = start_system_application(app_id, state, state_path).await?;
+    //     let cli_started = if config.environment != "systemonly" {
+    //         start_client_application(app_id, config, state, state_path).await?
+    //     } else {
+    //         false
+    //     };
+    //     sys_started || cli_started
+    // };
+
+    // // Update application status and handle the result
+    // if app_started {
+    //     if let Some(app) = app_status {
+    //         app.app_data.set_status(Status::Running);
+    //         app.timestamp = current_timestamp();
+    //     }
+    //     Ok(())
+    // } else {
+    //     Err(ErrorArrayItem::new(
+    //         Errors::NotFound,
+    //         format!("{}, Not found on the system", app_id),
+    //     ))
+    // }
 }
 
 /// Helper to start system applications

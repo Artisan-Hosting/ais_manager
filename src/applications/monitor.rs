@@ -2,9 +2,10 @@ use artisan_middleware::aggregator::{AppStatus, Metrics, Status};
 use artisan_middleware::dusa_collection_utils::errors::Errors;
 use artisan_middleware::dusa_collection_utils::functions::current_timestamp;
 use artisan_middleware::dusa_collection_utils::log;
-use artisan_middleware::dusa_collection_utils::stringy::Stringy;
+use artisan_middleware::dusa_collection_utils::types::rwarc::LockWithTimeout;
+use artisan_middleware::dusa_collection_utils::types::stringy::Stringy;
 use artisan_middleware::dusa_collection_utils::{
-    errors::ErrorArrayItem, log::LogLevel, rwarc::LockWithTimeout,
+    errors::ErrorArrayItem, logger::LogLevel,
 };
 use artisan_middleware::process_manager::is_pid_active;
 use artisan_middleware::state_persistence::AppState;
@@ -32,6 +33,7 @@ pub async fn monitor_application_resource_usage(
     > = APP_STATUS_ARRAY.try_write().await?;
 
     for (name, app) in application_handler_read_lock.iter() {
+        log!(LogLevel::Debug, "USAGE MONITOR: -> {}", name);
         match app {
             SupervisedProcesses::Child(supervised_child) => {
                 // cheap fix
@@ -115,6 +117,7 @@ pub async fn monitor_application_resource_usage(
 }
 
 pub async fn handle_dead_applications() -> Result<(), ErrorArrayItem> {
+    log!(LogLevel::Debug, "Handling dead applications");
     let mut app_status_array_write_lock: tokio::sync::RwLockWriteGuard<
         '_,
         std::collections::HashMap<Stringy, artisan_middleware::aggregator::AppStatus>,
@@ -149,7 +152,8 @@ pub async fn handle_dead_applications() -> Result<(), ErrorArrayItem> {
                         system_application_status.timestamp = current_timestamp();
 
                         // put in to be removed set
-                        system_handler_to_remove.insert(system_application_status.app_id.clone());
+                        system_handler_to_remove
+                            .insert(system_application_status.app_data.get_name().into());
 
                         // Dropping the monitor
                         supervised_child.terminate_monitor();
@@ -166,7 +170,8 @@ pub async fn handle_dead_applications() -> Result<(), ErrorArrayItem> {
                         system_application_status.timestamp = current_timestamp();
 
                         // put in to be removed set
-                        system_handler_to_remove.insert(system_application_status.app_id.clone());
+                        system_handler_to_remove
+                            .insert(system_application_status.app_data.get_name().into());
 
                         // Dropping the monitor
                         supervised_process.terminate_monitor();
@@ -191,7 +196,8 @@ pub async fn handle_dead_applications() -> Result<(), ErrorArrayItem> {
                         client_application_status.timestamp = current_timestamp();
 
                         // put in to be removed set
-                        client_handler_to_remove.insert(client_application_status.app_id.clone());
+                        client_handler_to_remove
+                            .insert(client_application_status.app_data.get_name().into());
 
                         // Dropping the monitor
                         supervised_child.terminate_monitor();
@@ -208,7 +214,8 @@ pub async fn handle_dead_applications() -> Result<(), ErrorArrayItem> {
                         client_application_status.timestamp = current_timestamp();
 
                         // put in to be removed set
-                        client_handler_to_remove.insert(client_application_status.app_id.clone());
+                        client_handler_to_remove
+                            .insert(client_application_status.app_data.get_name().into());
 
                         // Dropping the monitor
                         supervised_process.terminate_monitor();
@@ -271,7 +278,9 @@ pub async fn handle_new_system_applications() -> Result<(), ErrorArrayItem> {
 
         match reclaim_child(app_state.get_pid()).await {
             Ok(mut process) => {
-                process.monitor_usage().await;
+                if !process.monitoring() {
+                    process.monitor_usage().await;
+                }
 
                 // Updating the status array
                 let mut app_status_array_write_lock: tokio::sync::RwLockWriteGuard<
@@ -346,8 +355,9 @@ pub async fn handle_new_client_applications(state: &mut AppState) -> Result<(), 
 
         match reclaim_child(app_state.get_pid()).await {
             Ok(mut process) => {
-                process.monitor_usage().await;
-
+                if !process.monitoring() {
+                    process.monitor_usage().await;
+                }
                 // Updating the status array
                 let mut app_status_array_write_lock: tokio::sync::RwLockWriteGuard<
                     '_,
@@ -361,7 +371,7 @@ pub async fn handle_new_client_applications(state: &mut AppState) -> Result<(), 
 
                 // Adding to handler
                 client_handler_write_lock
-                    .insert(id.clone().0, SupervisedProcesses::Process(process));
+                    .insert(id.clone().1.name, SupervisedProcesses::Process(process));
                 log!(
                     LogLevel::Info,
                     "{} Started and added to the client handler",
@@ -382,9 +392,9 @@ pub async fn handle_new_client_applications(state: &mut AppState) -> Result<(), 
     Ok(())
 }
 
-pub async fn update_client_state(state: &mut AppState) -> Result<(), ErrorArrayItem> {
+pub async fn update_client_state(sys_state: &mut AppState) -> Result<(), ErrorArrayItem> {
     // Updating state files for system applications
-    resolve_client_applications(&state.clone().config).await?;
+    resolve_client_applications(&sys_state.clone().config).await?;
 
     let mut application_status_array_write_lock: tokio::sync::RwLockWriteGuard<
         '_,
@@ -397,6 +407,11 @@ pub async fn update_client_state(state: &mut AppState) -> Result<(), ErrorArrayI
     > = CLIENT_APPLICATION_ARRAY.try_read().await?;
 
     for mut_client_status in application_status_array_write_lock.iter_mut() {
+        log!(
+            LogLevel::Debug,
+            "looking for {} in status array",
+            mut_client_status.0
+        );
         if let Some(new_client_state) = client_application_array_read_lock.get(&mut_client_status.0)
         {
             let state = new_client_state.config.get_state();
@@ -433,9 +448,12 @@ pub async fn update_system_state() -> Result<(), ErrorArrayItem> {
             let state = new_client_state.config.get_state();
 
             mut_system_status.1.app_data.set_status(state.status);
-            
+
             if !state.error_log.is_empty() {
-                mut_system_status.1.app_data.update_error_log(state.clone().error_log, false);
+                mut_system_status
+                    .1
+                    .app_data
+                    .update_error_log(state.clone().error_log, false);
             } else {
                 mut_system_status.1.app_data.clear_errors();
             }
@@ -457,8 +475,23 @@ fn calculate_uptime(app: &mut AppStatus, state: &AppState) {
     let timedout = state.last_updated <= (current_timestamp() - 30);
 
     if timedout {
-        app.app_data.set_status(Status::Unknown);
-        app.metrics = None;
+        if let Ok(active) = is_pid_active(app.app_data.get_pid() as i32) {
+            if active {
+                app.app_data.set_status(Status::Warning);
+                app.app_data.state.error_log.push(ErrorArrayItem::new(
+                    Errors::AppState,
+                    format!("TIMMED OUT. LAST UPDATED {}", state.last_updated),
+                ));
+                app.uptime = Some(current_timestamp() - app.timestamp);
+            } else {
+                app.app_data.set_status(Status::Stopped);
+                app.metrics = None;
+                app.uptime = None;
+            }
+        } else {
+            app.metrics = None;
+            app.uptime = None;
+        }
     }
 
     let running: bool = app.app_data.get_status() != Status::Unknown
@@ -486,7 +519,8 @@ fn check_balances(app: &mut AppStatus) {
     }
 
     // clearing data for unknown
-    if app.app_data.get_status() == Status::Unknown || app.app_data.get_status() == Status::Stopped {
+    if app.app_data.get_status() == Status::Unknown || app.app_data.get_status() == Status::Stopped
+    {
         app.metrics = None;
         app.app_data.clear_errors();
         app.timestamp = current_timestamp();

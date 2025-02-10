@@ -1,9 +1,10 @@
 use artisan_middleware::config_bundle::ApplicationConfig;
 use artisan_middleware::dusa_collection_utils::functions::{create_hash, truncate};
-use artisan_middleware::dusa_collection_utils::log::LogLevel;
-use artisan_middleware::dusa_collection_utils::rwarc::LockWithTimeout;
-use artisan_middleware::dusa_collection_utils::types::PathType;
-use artisan_middleware::dusa_collection_utils::{errors::ErrorArrayItem, stringy::Stringy};
+use artisan_middleware::dusa_collection_utils::logger::LogLevel;
+use artisan_middleware::dusa_collection_utils::types::pathtype::PathType;
+use artisan_middleware::dusa_collection_utils::types::rwarc::LockWithTimeout;
+use artisan_middleware::dusa_collection_utils::types::stringy::Stringy;
+use artisan_middleware::dusa_collection_utils::{errors::ErrorArrayItem};
 use artisan_middleware::dusa_collection_utils::{
     errors::Errors, functions::current_timestamp, log,
 };
@@ -15,6 +16,7 @@ use artisan_middleware::{
     state_persistence::AppState,
 };
 use once_cell::sync::Lazy;
+use tokio::time::sleep;
 use std::{collections::HashMap, time::Duration};
 use tokio::process::Command;
 
@@ -607,12 +609,14 @@ pub async fn populate_initial_state_lock(state: &mut AppState) -> Result<(), Err
             app_data: app.1.clone(),
             uptime: None,
             metrics: None,
-            timestamp: current_timestamp(),
+            timestamp: app.1.state.stared_at,
             expected_status,
         };
 
-        if let Some(old) = application_status_array_write_lock.insert(app.0, app_status) {
+        if let Some(old) = application_status_array_write_lock.insert(app.0, app_status.clone()) {
             log!(LogLevel::Debug, "Updated? {}", old.app_id)
+        } else {
+            log!(LogLevel::Debug, "Inserted? {}", app_status.app_data.get_name());
         };
     }
 

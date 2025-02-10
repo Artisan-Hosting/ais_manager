@@ -1,7 +1,7 @@
+use artisan_middleware::dusa_collection_utils::logger::LogLevel;
 use nix::unistd::Pid;
 use artisan_middleware::process_manager::SupervisedProcess;
 use artisan_middleware::dusa_collection_utils::log;
-use artisan_middleware::dusa_collection_utils::log::LogLevel;
 use artisan_middleware::dusa_collection_utils::errors::ErrorArrayItem;
 
 /// This will verify, The child 

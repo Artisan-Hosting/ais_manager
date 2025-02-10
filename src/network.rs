@@ -1,9 +1,8 @@
 use std::{net::SocketAddr, sync::Arc, time::Duration};
 use artisan_middleware::{
-    aggregator::{AppMessage, Command, CommandResponse, CommandType}, config::AppConfig, portal::ManagerData, state_persistence::AppState
+    aggregator::{AppMessage, Command, CommandResponse, CommandType}, config::AppConfig, dusa_collection_utils::{logger::LogLevel, types::{pathtype::PathType, stringy::Stringy}}, portal::ManagerData, state_persistence::AppState
 };
-use artisan_middleware::dusa_collection_utils::{errors::ErrorArrayItem, log, types::PathType};
-use artisan_middleware::dusa_collection_utils::{log::LogLevel, stringy::Stringy};
+use artisan_middleware::dusa_collection_utils::{errors::ErrorArrayItem, log};
 use simple_comms::{
     network::send_receive::{send_data, send_empty_err},
     protocol::{

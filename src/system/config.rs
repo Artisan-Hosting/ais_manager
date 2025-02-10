@@ -1,11 +1,9 @@
 use artisan_middleware::{
-    aggregator::Status, config::AppConfig, state_persistence::{AppState, StatePersistence}, timestamp::current_timestamp, version::{aml_version, str_to_version}
+    aggregator::Status, config::AppConfig, dusa_collection_utils::types::{pathtype::PathType, stringy::Stringy}, state_persistence::{AppState, StatePersistence}, timestamp::current_timestamp, version::{aml_version, str_to_version}
 };
 use artisan_middleware::dusa_collection_utils::{
-    log::{set_log_level, LogLevel},
+    logger::{set_log_level, LogLevel},
     log,
-    stringy::Stringy,
-    types::PathType,
     version::{SoftwareVersion, Version, VersionCode},
 };
 
@@ -20,27 +18,6 @@ pub fn get_config() -> AppConfig {
             data_loaded.database = None;
             data_loaded.app_name = Stringy::from(env!("CARGO_PKG_NAME").to_string());
             // data_loaded.aggregator = Some(Aggregator{ socket_path: "/tmp/test.sock".into(), socket_permission: Some(755) });
-
-            let raw_version: SoftwareVersion = {
-                // defining the version
-                let library_version: Version = aml_version();
-                let software_version: Version = str_to_version(env!("CARGO_PKG_VERSION"), Some(VersionCode::Production));
-                
-                SoftwareVersion {
-                    application: software_version,
-                    library: library_version,
-                }
-            };
-        
-            data_loaded.version = match serde_json::to_string(&raw_version) {
-                Ok(ver) => ver,
-                Err(err) => {
-                    log!(LogLevel::Error, "{}", err);
-                    std::process::exit(100);
-                },
-            };
-
-            
             data_loaded
         }
         Err(e) => {
@@ -64,6 +41,7 @@ pub async fn generate_state(config: &AppConfig) -> AppState {
             loaded_data.config.log_level = config.log_level;
             loaded_data.config.aggregator = config.aggregator.clone();
             loaded_data.config.environment = config.environment.clone();
+            loaded_data.stared_at = current_timestamp();
             loaded_data.version = {
                 let library_version: Version = aml_version();
                 let software_version: Version = str_to_version(env!("CARGO_PKG_VERSION"), Some(VersionCode::Production));
@@ -104,6 +82,7 @@ pub async fn generate_state(config: &AppConfig) -> AppState {
                 error_log: vec![],
                 config: config.clone(),
                 system_application: true,
+                stared_at: current_timestamp(),
                 status: Status::Running,
             };
             state.data = String::from("Initializing");

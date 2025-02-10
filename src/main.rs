@@ -6,13 +6,16 @@ use applications::{
     monitor::{
         handle_dead_applications, handle_new_client_applications, handle_new_system_applications,
         monitor_application_resource_usage, update_client_state, update_system_state,
-    }, resolve::{resolve_client_applications, resolve_system_applications},
+    },
+    resolve::{resolve_client_applications, resolve_system_applications},
 };
 use artisan_middleware::{
     aggregator::load_registered_apps,
+    cli::clean_screen,
     dusa_collection_utils::{
-        errors::ErrorArrayItem, log::LogLevel, rwarc::LockWithTimeout, stringy::Stringy,
-        types::PathType,
+        errors::ErrorArrayItem,
+        logger::LogLevel,
+        types::{pathtype::PathType, rwarc::LockWithTimeout, stringy::Stringy},
     },
 };
 use artisan_middleware::{aggregator::save_registered_apps, dusa_collection_utils::log};
@@ -43,25 +46,31 @@ async fn main() -> Result<(), ErrorArrayItem> {
         log!(LogLevel::Debug, "\n{}", state);
     }
 
-    // loading previous app status array
-    if let Ok(mut app_status_array_write_lock) = APP_STATUS_ARRAY.try_write().await {
-        match load_registered_apps().await {
-            Ok(arr) => {
-                for app in arr {
-                    app_status_array_write_lock.insert(app.clone().app_id, app);
-                }
-                drop(app_status_array_write_lock);
-            }
-            Err(err) => {
-                log!(LogLevel::Error, "{}", err);
-                log!(LogLevel::Info, "Creating new status tracking");
-                // Adding applications to the status array
-                drop(app_status_array_write_lock);
-                resolve_client_applications(&state.config).await?;
-                resolve_system_applications().await?;
-                populate_initial_state_lock(&mut state).await?;
-            }
-        }
+    // // loading previous app status array
+    // TODO Don't load application data from file, App failes to link, and update state data
+    // if let Ok(mut app_status_array_write_lock) = APP_STATUS_ARRAY.try_write().await {
+    //     match load_registered_apps().await {
+    //         Ok(arr) => {
+    //             for app in arr {
+    //                 app_status_array_write_lock.insert(app.clone().app_id, app);
+    //             }
+    //             drop(app_status_array_write_lock);
+    //         }
+    //         Err(err) => {
+    //             log!(LogLevel::Error, "{}", err);
+    //             log!(LogLevel::Info, "Creating new status tracking");
+    //             // Adding applications to the status array
+    //             drop(app_status_array_write_lock);
+    //             resolve_client_applications(&state.config).await?;
+    //             resolve_system_applications().await?;
+    //             populate_initial_state_lock(&mut state).await?;
+    //         }
+    //     }
+    // }
+    {
+        resolve_client_applications(&state.config).await?;
+        resolve_system_applications().await?;
+        populate_initial_state_lock(&mut state).await?;
     }
 
     // seting up trackers
@@ -71,7 +80,7 @@ async fn main() -> Result<(), ErrorArrayItem> {
     application_controls.start_signal_monitors();
     application_controls
         .clone()
-        .start_contol_monitor();
+        .start_contol_monitor(state.clone());
 
     // Update metrics
     let mut state_clone = state.clone();
@@ -118,33 +127,33 @@ async fn main() -> Result<(), ErrorArrayItem> {
             sleep(Duration::from_millis(287)).await;
 
             // saving the application state to disk
-            {
-                let app_status_array_read_lock = match APP_STATUS_ARRAY.try_read().await {
-                    Ok(arr) => arr,
-                    Err(err) => {
-                        log!(LogLevel::Error, "{}", err);
-                        continue;
-                    }
-                };
+            // {
+            //     let app_status_array_read_lock = match APP_STATUS_ARRAY.try_read().await {
+            //         Ok(arr) => arr,
+            //         Err(err) => {
+            //             log!(LogLevel::Error, "{}", err);
+            //             continue;
+            //         }
+            //     };
 
-                let mut app_array: Vec<AppStatus> = Vec::new();
+            //     let mut app_array: Vec<AppStatus> = Vec::new();
 
-                app_status_array_read_lock
-                    .clone()
-                    .into_iter()
-                    .for_each(|app| {
-                        app_array.push(app.1);
-                    });
+            //     app_status_array_read_lock
+            //         .clone()
+            //         .into_iter()
+            //         .for_each(|app| {
+            //             app_array.push(app.1);
+            //         });
 
-                for app in app_array.clone() {
-                    log!(LogLevel::Debug, "Status: {}", app);
-                }
+            //     for app in app_array.clone() {
+            //         log!(LogLevel::Debug, "Status: {}", app);
+            //     }
 
-                if let Err(err) = save_registered_apps(&app_array).await {
-                    log!(LogLevel::Error, "{}", err);
-                }
-            }
-            sleep(Duration::from_millis(287)).await;
+            //     if let Err(err) = save_registered_apps(&app_array).await {
+            //         log!(LogLevel::Error, "{}", err);
+            //     }
+            // }
+            // sleep(Duration::from_millis(287)).await;
         }
     });
 
@@ -159,6 +168,14 @@ async fn main() -> Result<(), ErrorArrayItem> {
             sleep(Duration::from_secs(30)).await;
         }
     });
+
+    // tokio::spawn(async move {
+    //     sleep(Duration::from_secs(10)).await;
+    //     let read_app_status_lock = APP_STATUS_ARRAY.try_read().await.unwrap();
+    //     // clean_screen();
+    //     println!("App Status Array{:#?}", read_app_status_lock);
+    //     std::process::exit(0);
+    // });
 
     // Initiating network stack
     let tcp_listener: TcpListener = TcpListener::bind(format!("0.0.0.0:9800"))

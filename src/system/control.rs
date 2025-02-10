@@ -3,11 +3,14 @@
 use std::{sync::Arc, time::Duration};
 
 use crate::applications::child::{APP_STATUS_ARRAY, CLIENT_APPLICATION_HANDLER, SYSTEM_APPLICATION_HANDLER};
+use crate::applications::resolve::{resolve_client_applications, resolve_system_applications};
 use artisan_middleware::aggregator::{save_registered_apps, AppStatus};
-use artisan_middleware::dusa_collection_utils::log::LogLevel;
+use artisan_middleware::dusa_collection_utils::logger::LogLevel;
+use artisan_middleware::dusa_collection_utils::types::rwarc::LockWithTimeout;
+use artisan_middleware::state_persistence::AppState;
 use artisan_middleware::{
     control::ToggleControl,
-    dusa_collection_utils::{errors::ErrorArrayItem, rwarc::LockWithTimeout},
+    dusa_collection_utils::errors::ErrorArrayItem,
 };
 use artisan_middleware::{dusa_collection_utils::log, identity::Identifier};
 use once_cell::sync::Lazy;
@@ -145,7 +148,7 @@ impl Controls {
         !self.communication_lock.is_paused().await && !self.status_lock.is_paused().await
     }
 
-    pub fn start_contol_monitor(self: Arc<Self>) {
+    pub fn start_contol_monitor(self: Arc<Self>, state: AppState) {
         tokio::spawn(async move {
             loop {
                 tokio::select! {
@@ -176,6 +179,14 @@ impl Controls {
                                 log!(LogLevel::Error, "Failed to lock system handler, dumping: {}", err);
                             },
                         };
+
+                        if let Err(err) = resolve_client_applications(&state.config).await {
+                            log!(LogLevel::Error, "{}", err);
+                        };
+
+                        if let Err(err) = resolve_system_applications().await {
+                            log!(LogLevel::Error, "{}", err);
+                        };                      
 
                         log!(LogLevel::Info, "Reloaded !");
                         self.resume_all_controls().await;

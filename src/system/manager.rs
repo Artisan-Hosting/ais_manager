@@ -1,7 +1,8 @@
 use artisan_middleware::{
     dusa_collection_utils::{
         errors::{ErrorArrayItem, Errors},
-        types::PathType,
+        functions::current_timestamp,
+        types::pathtype::PathType,
     },
     git_actions::{GitAuth, GitCredentials},
     portal::ManagerData,
@@ -87,13 +88,7 @@ pub async fn get_manager_data(state: &mut AppState) -> Result<ManagerData, Error
         },
         identity,
         address: std::net::IpAddr::V4(get_local_ip()),
-        uptime: {
-            if let Some(uptime) = uptime {
-                uptime
-            } else {
-                0
-            }
-        },
+        uptime: { current_timestamp() - state.stared_at },
     };
 
     Ok(manager_data)
