@@ -90,6 +90,8 @@ pub async fn generate_state(config: &AppConfig) -> AppState {
                 system_application: true,
                 stared_at: current_timestamp(),
                 status: Status::Running,
+                stdout: Vec::new(),
+                stderr: Vec::new(),
             };
             state.data = String::from("Initializing");
             state.config.debug_mode = true;
