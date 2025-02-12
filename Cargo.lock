@@ -120,16 +120,14 @@ dependencies = [
 
 [[package]]
 name = "artisan_middleware"
-version = "5.0.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "b1986bc1567259399892362d78f7970c9ebb657fc8e84e8a9ca6e6343486467d"
+version = "5.1.1"
 dependencies = [
  "aes-gcm",
  "chrono",
  "colored 2.2.0",
  "colorized",
  "config",
- "dusa_collection_utils 3.2.0",
+ "dusa_collection_utils 3.2.1",
  "gethostname 0.5.0",
  "hex",
  "lazy_static",
@@ -582,9 +580,9 @@ dependencies = [
 
 [[package]]
 name = "dusa_collection_utils"
-version = "3.2.0"
+version = "3.2.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "8db199a091f9d35836222a2e3487d1dd2f65b33dd22b65547f1bbc6c8ffbded6"
+checksum = "30dba624f5b6b024f24260788325d6957ed1c5f003815cd277bb8242f0d88acf"
 dependencies = [
  "block-modes",
  "cfg_rust_features",
@@ -1924,7 +1922,7 @@ dependencies = [
  "aes 0.7.5",
  "base64 0.21.7",
  "block-modes",
- "dusa_collection_utils 3.2.0",
+ "dusa_collection_utils 3.2.1",
  "glob",
  "hex",
  "hmac",
@@ -2361,7 +2359,7 @@ dependencies = [
  "bincode",
  "bitflags 2.6.0",
  "colored 2.2.0",
- "dusa_collection_utils 3.2.0",
+ "dusa_collection_utils 3.2.1",
  "flate2",
  "get_if_addrs",
  "hex",

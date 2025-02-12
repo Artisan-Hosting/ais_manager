@@ -4,8 +4,8 @@ version = "2.0.0"
 edition = "2021"
 
 [dependencies]
-artisan_middleware = "5.0.0"
-#artisan_middleware = {path = "/home/dwhitfield/Developer/Artisan_Hosting/Libraries/artisan_middleware_lib"}
+#artisan_middleware = "5.0.0"
+artisan_middleware = {path = "/home/dwhitfield/Developer/Artisan_Hosting/Libraries/artisan_middleware_lib"}
 colored = "3.0.0"
 gethostname = "1.0.0"
 glob = "0.3.1"
