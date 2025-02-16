@@ -6,7 +6,7 @@ use applications::{
     },
     resolve::{resolve_client_applications, resolve_system_applications},
 };
-use artisan_middleware::dusa_collection_utils::log;
+use artisan_middleware::{dusa_collection_utils::log, identity::Identifier};
 use artisan_middleware::dusa_collection_utils::{
     errors::ErrorArrayItem,
     logger::LogLevel,
@@ -39,6 +39,13 @@ async fn main() -> Result<(), ErrorArrayItem> {
         log!(LogLevel::Debug, "\n{}", state);
     }
 
+    {
+        if let Err(_) =  Identifier::load_from_file() {
+            log!(LogLevel::Warn, "Creating new machine id");
+            let id = Identifier::new().await.unwrap();
+            id.save_to_file().unwrap();
+        }
+    }
     {
         resolve_client_applications(&state.config).await?;
         resolve_system_applications().await?;
