@@ -6,13 +6,13 @@ use applications::{
     },
     resolve::{resolve_client_applications, resolve_system_applications},
 };
-use artisan_middleware::{dusa_collection_utils::log, identity::Identifier};
 use artisan_middleware::dusa_collection_utils::{
     errors::ErrorArrayItem,
     logger::LogLevel,
     types::{pathtype::PathType, rwarc::LockWithTimeout, stringy::Stringy},
 };
 use artisan_middleware::{aggregator::AppStatus, config::AppConfig, state_persistence::AppState};
+use artisan_middleware::{dusa_collection_utils::log, identity::Identifier};
 use network::process_tcp;
 use std::{collections::HashMap, sync::Arc, time::Duration};
 use system::{
@@ -40,7 +40,7 @@ async fn main() -> Result<(), ErrorArrayItem> {
     }
 
     {
-        if let Err(_) =  Identifier::load_from_file() {
+        if let Err(_) = Identifier::load_from_file() {
             log!(LogLevel::Warn, "Creating new machine id");
             let id = Identifier::new().await.unwrap();
             id.save_to_file().unwrap();

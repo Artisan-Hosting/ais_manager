@@ -15,7 +15,7 @@ use tokio::task;
 use super::child::{CLIENT_APPLICATION_ARRAY, SYSTEM_APPLICATION_ARRAY};
 
 // pub static SYSTEMAPPLICATIONS: [&'static str; 4] = ["gitmon", "ids", "self", "messenger"];
-pub static SYSTEMAPPLICATIONS: [&'static str; 2] = ["gitmon", "self"];
+pub static SYSTEMAPPLICATIONS: [&'static str; 3] = ["gitmon", "self", "mailler"];
 
 #[derive(Debug, Serialize, Deserialize)]
 pub enum Applications {
