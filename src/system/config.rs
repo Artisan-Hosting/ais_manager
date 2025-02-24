@@ -45,6 +45,7 @@ pub async fn generate_state(config: &AppConfig) -> AppState {
             loaded_data.config.log_level = config.log_level;
             loaded_data.config.aggregator = config.aggregator.clone();
             loaded_data.config.environment = config.environment.clone();
+            loaded_data.config.git = config.git.clone();
             loaded_data.stared_at = current_timestamp();
             loaded_data.version = {
                 let library_version: Version = aml_version();
@@ -97,6 +98,7 @@ pub async fn generate_state(config: &AppConfig) -> AppState {
             state.config.debug_mode = true;
             state.last_updated = current_timestamp();
             state.config.log_level = config.log_level;
+            state.config.git = config.git.clone();
             state.config.environment = config.environment.clone();
             if config.debug_mode == true {
                 set_log_level(LogLevel::Debug);
