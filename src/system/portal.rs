@@ -167,7 +167,7 @@ async fn get_portal_addr(config: &AppConfig) -> Result<(), ErrorArrayItem> {
         .await
         .map_err(|err| ErrorArrayItem::new(Errors::Network, err.to_string()))?
     } else {
-        resolve_url("portal.arhst.net", None)
+        resolve_url("portal.arhst.net", Some(IpAddr::V4(Ipv4Addr::new(10, 1, 0, 1))))
             .await
             .map_err(|err| ErrorArrayItem::new(Errors::Network, err.to_string()))?
     };
