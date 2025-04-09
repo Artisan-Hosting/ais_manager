@@ -417,6 +417,19 @@ pub async fn update_client_state(sys_state: &mut AppState) -> Result<(), ErrorAr
             if !is_pid_active(state.pid as i32).map_err(ErrorArrayItem::from)? {
                 mut_client_status.1.app_data.clear_errors();
                 mut_client_status.1.app_data.set_status(Status::Stopped);
+            } else {
+                mut_client_status.1.app_data.state.error_log.truncate(5);
+
+                if !mut_client_status.1.app_data.state.stdout.is_empty() {
+                    mut_client_status.1.app_data.state.stdout.reverse();
+                    mut_client_status.1.app_data.state.stdout.truncate(500);
+                    mut_client_status.1.app_data.state.stdout.reverse();
+                }
+                if !mut_client_status.1.app_data.state.stderr.is_empty() {
+                    mut_client_status.1.app_data.state.stderr.reverse();
+                    mut_client_status.1.app_data.state.stderr.truncate(500);
+                    mut_client_status.1.app_data.state.stderr.reverse();
+                }
             }
 
             calculate_uptime(mut_client_status.1, &state);
@@ -459,6 +472,19 @@ pub async fn update_system_state() -> Result<(), ErrorArrayItem> {
             if !is_pid_active(state.pid as i32).map_err(ErrorArrayItem::from)? {
                 mut_system_status.1.app_data.clear_errors();
                 mut_system_status.1.app_data.set_status(Status::Stopped);
+            } else {
+                mut_system_status.1.app_data.state.error_log.truncate(5);
+
+                if !mut_system_status.1.app_data.state.stdout.is_empty() {
+                    mut_system_status.1.app_data.state.stdout.reverse();
+                    mut_system_status.1.app_data.state.stdout.truncate(500);
+                    mut_system_status.1.app_data.state.stdout.reverse();
+                }
+                if !mut_system_status.1.app_data.state.stderr.is_empty() {
+                    mut_system_status.1.app_data.state.stderr.reverse();
+                    mut_system_status.1.app_data.state.stderr.truncate(500);
+                    mut_system_status.1.app_data.state.stderr.reverse();
+                }
             }
 
             calculate_uptime(mut_system_status.1, &state);
