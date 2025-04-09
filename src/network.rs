@@ -89,7 +89,7 @@ async fn command_processor(
     config: &AppConfig,
 ) -> Result<AppMessage, ErrorArrayItem> {
     if let Err(err) = application_controls
-        .wait_for_network_control_with_timeout(Duration::from_secs(5))
+        .wait_for_network_control_with_timeout(Duration::from_secs(1))
         .await
     {
         log!(LogLevel::Error, "{}", err);
@@ -104,7 +104,7 @@ async fn command_processor(
     let app_id: Stringy = command.app_id;
     match command.command_type {
         artisan_middleware::aggregator::CommandType::Start => {
-            match start_application(&app_id, state, state_path, config).await {
+            match start_application(&app_id, application_controls.clone(), state, state_path, config).await {
                 Ok(_) => {
                     return Ok(AppMessage::Response(CommandResponse {
                         app_id,
@@ -194,6 +194,10 @@ async fn command_processor(
             if store_lock.contains_key(&app_id) {
                 match store_lock.get(&app_id) {
                     Some(app) => {
+                        
+                        let mut app = app.clone();
+                        app.timestamp = 0;
+
                         let response_data = AppMessage::Response(CommandResponse {
                             app_id,
                             command_type: CommandType::Status,
