@@ -118,6 +118,15 @@ impl Controls {
         self.communication_lock.wait_if_paused().await;
     }
 
+    pub async fn resume_network(&self) {
+        self.communication_lock.resume();
+    }
+
+    pub async fn pause_network(&self) {
+        self.communication_lock.pause();
+    }
+
+
     pub async fn wait_for_network_control_with_timeout(
         &self,
         timeout: Duration,
