@@ -117,15 +117,16 @@ impl Controls {
     pub async fn wait_for_network_control(&self) {
         self.communication_lock.wait_if_paused().await;
     }
-
+    
+    #[allow(dead_code)]
     pub async fn resume_network(&self) {
         self.communication_lock.resume();
     }
 
+    #[allow(dead_code)]
     pub async fn pause_network(&self) {
         self.communication_lock.pause();
     }
-
 
     pub async fn wait_for_network_control_with_timeout(
         &self,
