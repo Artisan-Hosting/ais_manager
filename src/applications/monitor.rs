@@ -6,8 +6,10 @@ use artisan_middleware::dusa_collection_utils::types::rwarc::LockWithTimeout;
 use artisan_middleware::dusa_collection_utils::types::stringy::Stringy;
 use artisan_middleware::dusa_collection_utils::{errors::ErrorArrayItem, logger::LogLevel};
 use artisan_middleware::process_manager::is_pid_active;
+use artisan_middleware::resource_monitor::ResourceMonitorLock;
 use artisan_middleware::state_persistence::AppState;
 use std::collections::{HashMap, HashSet};
+use std::time::Duration;
 
 use crate::applications::child::{
     CLIENT_APPLICATION_ARRAY, CLIENT_APPLICATION_HANDLER, SYSTEM_APPLICATION_HANDLER,
@@ -25,88 +27,83 @@ pub async fn monitor_application_resource_usage(
 ) -> Result<(), ErrorArrayItem> {
     let application_handler_read_lock = handler.try_read().await?;
 
-    let mut app_status_array_write_lock: tokio::sync::RwLockWriteGuard<
-        '_,
-        std::collections::HashMap<Stringy, artisan_middleware::aggregator::AppStatus>,
-    > = APP_STATUS_ARRAY.try_write().await?;
+    // Define an inner asynchronous function (note: use fn, not closure)
+    async fn update_usage(
+        name: &Stringy,
+        pid: String,
+        monitor: &ResourceMonitorLock,
+        app_status_array_write_lock: &mut HashMap<Stringy, AppStatus>,
+    ) -> Result<(), ErrorArrayItem> {
+        match monitor.0.try_write_with_timeout(None).await {
+            Ok(mut monitor_lock) => {
+                let usage = monitor_lock.aggregate_tree_usage()?;
+                log!(
+                    LogLevel::Debug,
+                    "{} usage : cpu:{}, ram: {}",
+                    pid,
+                    usage.0,
+                    usage.1
+                );
+                monitor_lock.cpu = usage.0;
+                monitor_lock.ram = usage.1;
+
+                if let Some(app_status) = app_status_array_write_lock.get_mut(name) {
+                    app_status.metrics = Some(Metrics {
+                        cpu_usage: usage.0,
+                        memory_usage: usage.1,
+                        other: None,
+                    });
+                }
+                Ok(())
+            }
+            Err(err) => Err(err),
+        }
+    }
 
     for (name, app) in application_handler_read_lock.iter() {
         log!(LogLevel::Debug, "USAGE MONITOR: -> {}", name);
         match app {
-            SupervisedProcesses::Child(supervised_child) => {
-                // cheap fix
-                if !supervised_child.running().await {
+            SupervisedProcesses::Child(child) => {
+                let mut app_status_array_write_lock = APP_STATUS_ARRAY.try_write().await?;
+
+                if !child.running().await {
                     continue;
                 }
-
-                match supervised_child
-                    .monitor
-                    .0
-                    .try_write_with_timeout(None)
-                    .await
+                let pid = child.get_pid().await?;
+                if let Err(err) = update_usage(
+                    name,
+                    pid.to_string(),
+                    &child.monitor,
+                    &mut app_status_array_write_lock,
+                )
+                .await
                 {
-                    Ok(mut monitor_lock) => {
-                        let usage: (f32, f32) = monitor_lock.aggregate_tree_usage()?;
-                        log!(
-                            LogLevel::Debug,
-                            "{} usage : cpu:{}, ram: {}",
-                            supervised_child.get_pid().await?,
-                            usage.0,
-                            usage.1
-                        );
-                        monitor_lock.cpu = usage.0;
-                        monitor_lock.ram = usage.1;
-
-                        if let Some(app_arr_val) = app_status_array_write_lock.get_mut(&name) {
-                            app_arr_val.metrics = Some(Metrics {
-                                cpu_usage: usage.0,
-                                memory_usage: usage.1,
-                                other: None,
-                            })
-                        }
-                    }
-                    Err(err) => {
-                        log!(LogLevel::Error, "Error locking monitor: {}", err);
-                        break;
-                    }
+                    drop(app_status_array_write_lock);
+                    log!(LogLevel::Error, "Error locking monitor: {}", err);
+                    break;
                 }
+                drop(app_status_array_write_lock);
             }
-            SupervisedProcesses::Process(supervised_process) => {
-                if !supervised_process.active() {
+            SupervisedProcesses::Process(process) => {
+                let mut app_status_array_write_lock = APP_STATUS_ARRAY.try_write().await?;
+
+                if !process.active() {
                     continue;
                 }
-
-                match supervised_process
-                    .monitor
-                    .0
-                    .try_write_with_timeout(None)
-                    .await
+                let pid = process.get_pid();
+                if let Err(err) = update_usage(
+                    name,
+                    pid.to_string(),
+                    &process.monitor,
+                    &mut app_status_array_write_lock,
+                )
+                .await
                 {
-                    Ok(mut monitor_lock) => {
-                        let usage: (f32, f32) = monitor_lock.aggregate_tree_usage()?;
-                        log!(
-                            LogLevel::Debug,
-                            "{} usage : cpu:{}, ram: {}",
-                            supervised_process.get_pid(),
-                            usage.0,
-                            usage.1
-                        );
-                        monitor_lock.cpu = usage.0;
-                        monitor_lock.ram = usage.1;
-
-                        if let Some(app_arr_val) = app_status_array_write_lock.get_mut(&name) {
-                            app_arr_val.metrics = Some(Metrics {
-                                cpu_usage: usage.0,
-                                memory_usage: usage.1,
-                                other: None,
-                            })
-                        }
-                    }
-                    Err(err) => {
-                        log!(LogLevel::Error, "Error locking monitor: {}", err);
-                        break;
-                    }
+                    drop(app_status_array_write_lock);
+                    log!(LogLevel::Error, "Error locking monitor: {}", err);
+                    break;
                 }
+                drop(app_status_array_write_lock);
             }
         };
     }
@@ -116,126 +113,108 @@ pub async fn monitor_application_resource_usage(
 
 pub async fn handle_dead_applications() -> Result<(), ErrorArrayItem> {
     log!(LogLevel::Debug, "Handling dead applications");
-    let mut app_status_array_write_lock: tokio::sync::RwLockWriteGuard<
-        '_,
-        std::collections::HashMap<Stringy, artisan_middleware::aggregator::AppStatus>,
-    > = APP_STATUS_ARRAY.try_write().await?;
 
-    let mut system_handler_write_lock: tokio::sync::RwLockWriteGuard<
-        '_,
-        HashMap<Stringy, SupervisedProcesses>,
-    > = SYSTEM_APPLICATION_HANDLER.try_write().await?;
+    let mut system_handler_write_lock = SYSTEM_APPLICATION_HANDLER
+        .try_write_with_timeout(Some(Duration::from_secs(2)))
+        .await?;
+    let mut client_handler_write_lock = CLIENT_APPLICATION_HANDLER
+        .try_write_with_timeout(Some(Duration::from_secs(2)))
+        .await?;
 
-    let mut system_handler_to_remove: HashSet<Stringy> = HashSet::new();
+    let mut system_handler_to_remove = HashSet::new();
+    let mut client_handler_to_remove = HashSet::new();
 
-    let mut client_handler_write_lock: tokio::sync::RwLockWriteGuard<
-        '_,
-        HashMap<Stringy, SupervisedProcesses>,
-    > = CLIENT_APPLICATION_HANDLER.try_write().await?;
-
-    let mut client_handler_to_remove: HashSet<Stringy> = HashSet::new();
-
-    for system_handle in system_handler_write_lock.iter_mut() {
-        let system_name: &Stringy = system_handle.0;
-        if let Some(system_application_status) = app_status_array_write_lock.get_mut(&system_name) {
-            match system_handle.1 {
-                SupervisedProcesses::Child(supervised_child) => {
-                    if !supervised_child.running().await {
-                        // Set status properly
-                        system_application_status
-                            .app_data
-                            .set_status(Status::Stopped);
-                        system_application_status.metrics = None;
-                        system_application_status.uptime = None;
-                        system_application_status.timestamp = current_timestamp();
-
-                        // put in to be removed set
-                        system_handler_to_remove
-                            .insert(system_application_status.app_data.get_name().into());
-
-                        // Dropping the monitor
-                        supervised_child.terminate_monitor();
+    // Closure to process handlers
+    async fn process_handlers(
+        handler: &mut HashMap<Stringy, SupervisedProcesses>,
+        app_statuses: &mut std::collections::HashMap<
+            Stringy,
+            artisan_middleware::aggregator::AppStatus,
+        >,
+        to_remove: &mut HashSet<Stringy>,
+    ) {
+        for (app_name, process) in handler.iter_mut() {
+            if let Some(app_status) = app_statuses.get_mut(app_name) {
+                let should_remove = match process {
+                    SupervisedProcesses::Child(child) => {
+                        let running = child.running().await;
+                        if !running {
+                            child.terminate_monitor();
+                        }
+                        !running
                     }
-                }
-                SupervisedProcesses::Process(supervised_process) => {
-                    if !supervised_process.active() {
-                        // Set status properly
-                        system_application_status
-                            .app_data
-                            .set_status(Status::Stopped);
-                        system_application_status.metrics = None;
-                        system_application_status.uptime = None;
-                        system_application_status.timestamp = current_timestamp();
-
-                        // put in to be removed set
-                        system_handler_to_remove
-                            .insert(system_application_status.app_data.get_name().into());
-
-                        // Dropping the monitor
-                        supervised_process.terminate_monitor();
+                    SupervisedProcesses::Process(proc) => {
+                        let active = proc.active();
+                        if !active {
+                            proc.terminate_monitor();
+                        }
+                        !active
                     }
+                };
+
+                if should_remove {
+                    app_status.app_data.set_status(Status::Stopped);
+                    app_status.metrics = None;
+                    app_status.uptime = None;
+                    app_status.timestamp = current_timestamp();
+
+                    to_remove.insert(app_status.app_data.get_name().into());
                 }
             }
         }
     }
 
-    for client_handle in client_handler_write_lock.iter_mut() {
-        let client_name: &Stringy = client_handle.0;
-        if let Some(client_application_status) = app_status_array_write_lock.get_mut(&client_name) {
-            match client_handle.1 {
-                SupervisedProcesses::Child(supervised_child) => {
-                    if !supervised_child.running().await {
-                        // Set status properly
-                        client_application_status
-                            .app_data
-                            .set_status(Status::Stopped);
-                        client_application_status.metrics = None;
-                        client_application_status.uptime = None;
-                        client_application_status.timestamp = current_timestamp();
+    let mut app_status_array_write_lock = APP_STATUS_ARRAY
+        .try_write_with_timeout(Some(Duration::from_secs(2)))
+        .await?;
 
-                        // put in to be removed set
-                        client_handler_to_remove
-                            .insert(client_application_status.app_data.get_name().into());
+    // Process system and client handlers
+    process_handlers(
+        &mut system_handler_write_lock,
+        &mut app_status_array_write_lock,
+        &mut system_handler_to_remove,
+    )
+    .await;
 
-                        // Dropping the monitor
-                        supervised_child.terminate_monitor();
-                    }
-                }
-                SupervisedProcesses::Process(supervised_process) => {
-                    if !supervised_process.active() {
-                        // Set status properly
-                        client_application_status
-                            .app_data
-                            .set_status(Status::Stopped);
-                        client_application_status.metrics = None;
-                        client_application_status.uptime = None;
-                        client_application_status.timestamp = current_timestamp();
+    process_handlers(
+        &mut client_handler_write_lock,
+        &mut app_status_array_write_lock,
+        &mut client_handler_to_remove,
+    )
+    .await;
 
-                        // put in to be removed set
-                        client_handler_to_remove
-                            .insert(client_application_status.app_data.get_name().into());
+    drop(app_status_array_write_lock);
 
-                        // Dropping the monitor
-                        supervised_process.terminate_monitor();
-                    }
-                }
+    // Generic removal function
+    fn remove_dead_apps(
+        handler: &mut HashMap<Stringy, SupervisedProcesses>,
+        to_remove: &HashSet<Stringy>,
+        handler_name: &str,
+    ) {
+        for id in to_remove {
+            if handler.remove(id).is_some() {
+                log!(
+                    LogLevel::Info,
+                    "Removed: {} from {} handler",
+                    id,
+                    handler_name
+                );
             }
         }
     }
 
-    // removing system apps
-    for id in system_handler_to_remove.iter() {
-        if let Some(_) = system_handler_write_lock.remove(&id) {
-            log!(LogLevel::Info, "Removed: {} from system handler", id);
-        }
-    }
+    remove_dead_apps(
+        &mut system_handler_write_lock,
+        &system_handler_to_remove,
+        "system",
+    );
 
-    // removing client apps
-    for id in client_handler_to_remove.iter() {
-        if let Some(_) = client_handler_write_lock.remove(&id) {
-            log!(LogLevel::Info, "Removed: {} from client handler", id);
-        }
-    }
+    remove_dead_apps(
+        &mut client_handler_write_lock,
+        &client_handler_to_remove,
+        "client",
+    );
+
 
     Ok(())
 }
@@ -293,6 +272,8 @@ pub async fn handle_new_system_applications() -> Result<(), ErrorArrayItem> {
                         app.metrics = None;
                     }
                 }
+                
+                drop(app_status_array_write_lock);
 
                 // Adding to handler
                 system_handler_write_lock
@@ -324,7 +305,17 @@ pub async fn handle_new_client_applications(state: &mut AppState) -> Result<(), 
     let mut client_handler_write_lock: tokio::sync::RwLockWriteGuard<
         '_,
         HashMap<Stringy, SupervisedProcesses>,
-    > = CLIENT_APPLICATION_HANDLER.try_write().await?;
+    > = CLIENT_APPLICATION_HANDLER
+        .try_write()
+        .await
+        .map_err(|mut err| {
+            err.err_mesg = format!(
+                "Error getting write lock on client handler: {}",
+                err.err_mesg
+            )
+            .into();
+            err
+        })?;
 
     let client_application_read_lock: tokio::sync::RwLockReadGuard<
         '_,
@@ -360,12 +351,21 @@ pub async fn handle_new_client_applications(state: &mut AppState) -> Result<(), 
                 let mut app_status_array_write_lock: tokio::sync::RwLockWriteGuard<
                     '_,
                     HashMap<Stringy, AppStatus>,
-                > = APP_STATUS_ARRAY.try_write().await?;
+                > = APP_STATUS_ARRAY.try_write().await.map_err(|mut err| {
+                    err.err_mesg = format!(
+                        "Error getting write lock on reclaiming child app status array: {}",
+                        err.err_mesg
+                    )
+                    .into();
+                    err
+                })?;
 
                 if let Some(app) = app_status_array_write_lock.get_mut(&id.0) {
                     app.app_data.set_pid(process.get_pid() as u32);
                     app.app_data.set_status(app_state.get_status());
                 }
+
+                drop(app_status_array_write_lock);
 
                 // Adding to handler
                 client_handler_write_lock
@@ -397,7 +397,14 @@ pub async fn update_client_state(sys_state: &mut AppState) -> Result<(), ErrorAr
     let mut application_status_array_write_lock: tokio::sync::RwLockWriteGuard<
         '_,
         HashMap<Stringy, AppStatus>,
-    > = APP_STATUS_ARRAY.try_write().await?;
+    > = APP_STATUS_ARRAY.try_write().await.map_err(|mut err| {
+        err.err_mesg = format!(
+            "Error getting write lock on app status in update client state: {}",
+            err.err_mesg
+        )
+        .into();
+        err
+    })?;
 
     let client_application_array_read_lock: tokio::sync::RwLockReadGuard<
         '_,
@@ -435,6 +442,8 @@ pub async fn update_client_state(sys_state: &mut AppState) -> Result<(), ErrorAr
             calculate_uptime(mut_client_status.1, &state);
         }
     }
+    
+    drop(application_status_array_write_lock);
 
     Ok(())
 }
@@ -446,7 +455,14 @@ pub async fn update_system_state() -> Result<(), ErrorArrayItem> {
     let mut application_status_array_write_lock: tokio::sync::RwLockWriteGuard<
         '_,
         HashMap<Stringy, AppStatus>,
-    > = APP_STATUS_ARRAY.try_write().await?;
+    > = APP_STATUS_ARRAY.try_write().await.map_err(|mut err| {
+        err.err_mesg = format!(
+            "Error getting write lock on app status in update system state: {}",
+            err.err_mesg
+        )
+        .into();
+        err
+    })?;
 
     let system_application_array_read_lock: tokio::sync::RwLockReadGuard<
         '_,
@@ -490,6 +506,8 @@ pub async fn update_system_state() -> Result<(), ErrorArrayItem> {
             calculate_uptime(mut_system_status.1, &state);
         }
     }
+
+    drop(application_status_array_write_lock);
 
     Ok(())
 }
