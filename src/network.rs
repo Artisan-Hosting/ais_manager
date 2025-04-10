@@ -104,7 +104,7 @@ async fn command_processor(
     let app_id: Stringy = command.app_id;
     match command.command_type {
         artisan_middleware::aggregator::CommandType::Start => {
-            match start_application(&app_id, application_controls.clone(), state, state_path, config).await {
+            match start_application(&app_id, state, state_path, config).await {
                 Ok(_) => {
                     return Ok(AppMessage::Response(CommandResponse {
                         app_id,
