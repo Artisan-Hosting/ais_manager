@@ -1,4 +1,5 @@
 use std::io;
+use std::time::Duration;
 
 use artisan_middleware::aggregator::AppStatus;
 use artisan_middleware::dusa_collection_utils::errors::{ErrorArrayItem, Errors};
@@ -40,14 +41,21 @@ pub async fn stop_application(app_id: &Stringy) -> Result<(), ErrorArrayItem> {
     match app_status {
         Some(app) => {
             // Determine if it's a system app
-            let child: Option<SupervisedProcesses> = if app.app_data.is_system_application() {
+            if app.app_data.is_system_application() {
                 let mut lock = SYSTEM_APPLICATION_HANDLER.try_write().await?;
                 log!(
                     LogLevel::Trace,
                     "{} Dropped from handler for termination",
                     app.app_id
                 );
-                lock.remove(&app.app_data.get_name().into())
+
+                if let None = lock.remove(&app.app_data.get_name().into()) {
+                    log!(
+                        LogLevel::Warn,
+                        "The application wasn't registered with the handler: {}",
+                        app.app_id
+                    );
+                }
             } else {
                 let mut lock = CLIENT_APPLICATION_HANDLER.try_write().await?;
                 log!(
@@ -55,36 +63,22 @@ pub async fn stop_application(app_id: &Stringy) -> Result<(), ErrorArrayItem> {
                     "{} Dropped from handler for termination",
                     app.app_id
                 );
-                lock.remove(&app.app_data.get_name().into())
+
+                if let None = lock.remove(&app.app_data.get_name().into()) {
+                    log!(
+                        LogLevel::Warn,
+                        "The application wasn't registered with the handler: {}",
+                        app.app_id
+                    );
+                }
             };
 
-            if let Some(child) = child {
-                match child {
-                    SupervisedProcesses::Child(supervised_child) => {
-                        app.app_data.set_status(Status::Stopped);
-                        app.metrics = None;
-                        app.uptime = None;
-                        drop(app_status_array_write_lock);
-                        send_stop(supervised_child.get_pid().await? as i32)?;
-                        return Ok(());
-                    }
-                    SupervisedProcesses::Process(supervised_process) => {
-                        app.app_data.set_status(Status::Stopped);
-                        app.metrics = None;
-                        app.uptime = None;
-                        drop(app_status_array_write_lock);
-                        send_stop(supervised_process.get_pid())?;
-                        return Ok(());
-                    }
-                }
-            } else {
-                log!(
-                    LogLevel::Warn,
-                    "{} is in the app_array but not in a handler, errouneous state",
-                    app_id
-                );
-                return Ok(());
-            }
+            app.app_data.set_status(Status::Stopped);
+            app.metrics = None;
+            app.uptime = None;
+            send_stop(&app)?;
+            // drop(app_status_array_write_lock);
+            return Ok(());
         }
         None => {
             log!(LogLevel::Warn, "{}, Not registered in the system", app_id);
@@ -96,16 +90,40 @@ pub async fn stop_application(app_id: &Stringy) -> Result<(), ErrorArrayItem> {
     }
 }
 
-fn send_stop(pid: i32) -> Result<(), ErrorArrayItem> {
-    // SIGUSR1 = 10
-    let result: i32 = unsafe { kill(pid, 9) };
+fn send_stop(app: &AppStatus) -> Result<(), ErrorArrayItem> {
+    let systemd_app = SystemdService::new(&app.app_data.get_name())?;
 
-    if result == 0 {
-        return Ok(());
-    } else {
-        let error: io::Error = io::Error::from_raw_os_error(result);
-        return Err(ErrorArrayItem::from(error));
-    }
+    systemd_app.kill().map_err(|err| {
+        ErrorArrayItem::new(
+            Errors::GeneralError,
+            format!("Failed to kill application: {}", err.to_string()),
+        )
+    })?;
+
+    systemd_app
+        .is_active()
+        .map_err(|err| {
+            ErrorArrayItem::new(
+                Errors::GeneralError,
+                format!(
+                    "Error checking if system service is active: {}",
+                    err.to_string()
+                ),
+            )
+        })
+        .map(|active| match active {
+            true => {
+                let kill_result: i32 = unsafe { kill(app.app_data.get_pid() as i32, 9) };
+                if kill_result != 0 {
+                    let error: io::Error = io::Error::from_raw_os_error(kill_result);
+                    Err(ErrorArrayItem::from(error))
+                } else {
+                    Ok(())
+                }
+            }
+            false => Ok(()),
+        })?
+    // SIGUSR1 = 10
 }
 
 pub async fn reload_application(app_id: &Stringy) -> Result<(), ErrorArrayItem> {
@@ -189,14 +207,13 @@ pub async fn start_application(
     _state_path: &PathType,
     _config: &AppConfig,
 ) -> Result<(), ErrorArrayItem> {
-    let mut app_status_array_write_lock = APP_STATUS_ARRAY.try_write().await?;
+    let app_status_array_read_lock = APP_STATUS_ARRAY
+        .try_read_with_timeout(Some(Duration::from_secs(20)))
+        .await?;
 
     // Retrieve or initialize app status
-    let app: &mut AppStatus = match app_status_array_write_lock.get_mut(app_id) {
-        Some(app) => {
-            app.app_data.set_status(Status::Starting);
-            app
-        }
+    let app: &AppStatus = match app_status_array_read_lock.get(app_id) {
+        Some(app) => app,
         None => {
             let error = ErrorArrayItem::new(
                 Errors::NotFound,
@@ -206,72 +223,31 @@ pub async fn start_application(
         }
     };
 
-    let systemd_app: SystemdService = match SystemdService::new(&app.app_data.get_name()) {
-        Ok(systemd) => systemd,
-        Err(err) => {
-            return Err(ErrorArrayItem::from(err));
-        }
-    };
+    let systemd_app = SystemdService::new(&app.app_data.get_name())?;
 
-    let _is_active = match systemd_app.is_active() {
-        Ok(b) => b,
-        Err(err) => {
-            return Err(ErrorArrayItem::new(Errors::NotFound, err.to_string()));
-        }
-    };
-
-    // TODO ensure we kill all instances before starting a new one
-    // match is_active {
-    //     true => ,
-    //     false => {
-    //         if let Err(err) = systemd_app.start() {
-
-    //         }
-    //     },
-    // }
-
-    if let Err(err) = systemd_app.start() {
-        return Err(ErrorArrayItem::new(Errors::Unauthorized, err.to_string()));
-    }
-
-    Ok(())
-
-    // // Attempt to start the application
-    // let app_started = if let Some(ref app) = app_status {
-    //     if app.app_data.is_system_application() {
-    //         start_system_application(app_id, state, state_path).await?
-    //     } else if config.environment != "systemonly" {
-    //         start_client_application(app_id, config, state, state_path).await?
-    //     } else {
-    //         log!(
-    //             LogLevel::Warn,
-    //             "Tried to start a client application in safe mode"
-    //         );
-    //         return Ok(());
-    //     }
-    // } else {
-    //     let sys_started = start_system_application(app_id, state, state_path).await?;
-    //     let cli_started = if config.environment != "systemonly" {
-    //         start_client_application(app_id, config, state, state_path).await?
-    //     } else {
-    //         false
-    //     };
-    //     sys_started || cli_started
-    // };
-
-    // // Update application status and handle the result
-    // if app_started {
-    //     if let Some(app) = app_status {
-    //         app.app_data.set_status(Status::Running);
-    //         app.timestamp = current_timestamp();
-    //     }
-    //     Ok(())
-    // } else {
-    //     Err(ErrorArrayItem::new(
-    //         Errors::NotFound,
-    //         format!("{}, Not found on the system", app_id),
-    //     ))
-    // }
+    systemd_app
+        .is_active()
+        .map_err(|err| {
+            ErrorArrayItem::new(
+                Errors::GeneralError,
+                format!(
+                    "Error checking if system service is active: {}",
+                    err.to_string()
+                ),
+            )
+        })
+        .map(|active| {
+            match active {
+                true => send_stop(app),
+                false => {
+                    if let Err(err) = systemd_app.start() {
+                        Err(ErrorArrayItem::new(Errors::Unauthorized, err.to_string()))
+                    } else {
+                        Ok(())
+                    }
+                }
+            }
+        })?
 }
 
 /// Helper to start system applications
