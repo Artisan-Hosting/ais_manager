@@ -382,7 +382,17 @@ pub async fn spawn_single_application(
             let mut system_handler_write_lock: tokio::sync::RwLockWriteGuard<
                 '_,
                 HashMap<Stringy, SupervisedProcesses>,
-            > = SYSTEM_APPLICATION_HANDLER.try_write().await?;
+            > = SYSTEM_APPLICATION_HANDLER
+                .try_write()
+                .await
+                .map_err(|mut err| {
+                    err.err_mesg = format!(
+                        "Error getting write lock on system handler in spawn single application: {}",
+                        err.err_mesg
+                    )
+                    .into();
+                    err
+                })?;
 
             system_handler_write_lock.insert(system_application.name, system_process);
             drop(system_handler_write_lock);
@@ -512,7 +522,14 @@ pub async fn spawn_single_application(
 
             // pushing application into the write lock
             let mut client_application_handler_write_lock =
-                CLIENT_APPLICATION_HANDLER.try_write().await?;
+                CLIENT_APPLICATION_HANDLER.try_write().await.map_err(|mut err| {
+                    err.err_mesg = format!(
+                        "Error getting write lock on system handler in spawn single application: {}",
+                        err.err_mesg
+                    )
+                    .into();
+                    err
+                })?;
             client_application_handler_write_lock
                 .insert(client_application.name.into(), client_child);
             drop(client_application_handler_write_lock);
