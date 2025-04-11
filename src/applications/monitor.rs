@@ -422,14 +422,14 @@ pub async fn update_client_state(sys_state: &mut AppState) -> Result<(), ErrorAr
         {
             let state = new_client_state.config.get_state();
 
-            let net = Controls::get_controls()
-                .await?
-                .kernel_app
-                .view_bandwidth(state.pid)
-                .await?;
+            // let net = Controls::get_controls()
+            //     .await?
+            //     .kernel_app
+            //     .view_bandwidth(state.pid)
+            //     .await?;
 
-            log!(LogLevel::Debug, "{}:{}", net.0, net.1);
-            sleep(Duration::from_secs(1)).await;
+            // log!(LogLevel::Debug, "{}:{}", net.0, net.1);
+            // sleep(Duration::from_secs(1)).await;
 
             mut_client_status.1.app_data.update_state(state.clone());
             if !is_pid_active(state.pid as i32).map_err(ErrorArrayItem::from)? {
