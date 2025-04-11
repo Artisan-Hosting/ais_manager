@@ -8,6 +8,7 @@ use artisan_middleware::dusa_collection_utils::{errors::ErrorArrayItem, logger::
 use artisan_middleware::process_manager::is_pid_active;
 use artisan_middleware::resource_monitor::ResourceMonitorLock;
 use artisan_middleware::state_persistence::AppState;
+use tokio::time::sleep;
 use std::collections::{HashMap, HashSet};
 use std::time::Duration;
 
@@ -17,6 +18,7 @@ use crate::applications::child::{
 use crate::applications::resolve::{
     resolve_client_applications, resolve_system_applications, SystemApplication,
 };
+use crate::system::control::Controls;
 
 use super::child::{SupervisedProcesses, APP_STATUS_ARRAY, SYSTEM_APPLICATION_ARRAY};
 use super::pid::reclaim_child;
@@ -215,7 +217,6 @@ pub async fn handle_dead_applications() -> Result<(), ErrorArrayItem> {
         "client",
     );
 
-
     Ok(())
 }
 
@@ -272,7 +273,7 @@ pub async fn handle_new_system_applications() -> Result<(), ErrorArrayItem> {
                         app.metrics = None;
                     }
                 }
-                
+
                 drop(app_status_array_write_lock);
 
                 // Adding to handler
@@ -420,6 +421,16 @@ pub async fn update_client_state(sys_state: &mut AppState) -> Result<(), ErrorAr
         if let Some(new_client_state) = client_application_array_read_lock.get(&mut_client_status.0)
         {
             let state = new_client_state.config.get_state();
+
+            let net = Controls::get_controls()
+                .await?
+                .kernel_app
+                .view_bandwidth(state.pid)
+                .await?;
+
+            log!(LogLevel::Debug, "{}:{}", net.0, net.1);
+            sleep(Duration::from_secs(1)).await;
+
             mut_client_status.1.app_data.update_state(state.clone());
             if !is_pid_active(state.pid as i32).map_err(ErrorArrayItem::from)? {
                 mut_client_status.1.app_data.clear_errors();
@@ -442,7 +453,7 @@ pub async fn update_client_state(sys_state: &mut AppState) -> Result<(), ErrorAr
             calculate_uptime(mut_client_status.1, &state);
         }
     }
-    
+
     drop(application_status_array_write_lock);
 
     Ok(())

@@ -26,17 +26,15 @@ impl BandwidthTracker {
         let mut bpf = Bpf::load(bpf_data)
             .map_err(|err| ErrorArrayItem::new(Errors::GeneralError, err.to_string()))?;
 
-            let probes = [
-                ("bpf_tcp_sendmsg", "tcp_sendmsg"),
-                ("bpf_tcp_recvmsg", "tcp_cleanup_rbuf"),
-                ("bpf_udp_sendmsg", "udp_sendmsg"),
-                ("bpf_udp_recvmsg", "udp_recvmsg"),
-            ];
+        let probes = [
+            ("bpf_tcp_sendmsg", "tcp_sendmsg"),
+            ("bpf_tcp_recvmsg", "tcp_cleanup_rbuf"),
+            ("bpf_udp_sendmsg", "udp_sendmsg"),
+            ("bpf_udp_recvmsg", "udp_recvmsg"),
+        ];
 
-
-            for (prog_name, attach_point) in probes {
-                
-                let bpf: Result<&mut Program, ErrorArrayItem> =
+        for (prog_name, attach_point) in probes {
+            let bpf: Result<&mut Program, ErrorArrayItem> =
                 if let Some(bpf) = bpf.program_mut(prog_name) {
                     Ok(bpf)
                 } else {
@@ -46,29 +44,35 @@ impl BandwidthTracker {
                     ))
                 };
 
-                let program: &mut KProbe =
-                bpf.unwrap().try_into()
+            let program: &mut KProbe =
+                bpf.unwrap()
+                    .try_into()
                     .map_err(|err: aya::programs::ProgramError| {
                         ErrorArrayItem::new(Errors::GeneralError, err.to_string())
                     })?;
-            
-                program
-                    .load()
-                    .map_err(|e: aya::programs::ProgramError| ErrorArrayItem::new(Errors::GeneralError, e.to_string()))?;
-            
-                program
-                    .attach(attach_point, 0)
-                    .map_err(|e: aya::programs::ProgramError| ErrorArrayItem::new(Errors::GeneralError, e.to_string()))?;
-            
-                println!("✅ Successfully attached probe {} to {}", prog_name, attach_point);
-            }
-            
+
+            program.load().map_err(|e: aya::programs::ProgramError| {
+                ErrorArrayItem::new(Errors::GeneralError, e.to_string())
+            })?;
+
+            program
+                .attach(attach_point, 0)
+                .map_err(|e: aya::programs::ProgramError| {
+                    ErrorArrayItem::new(Errors::GeneralError, e.to_string())
+                })?;
+
+            println!(
+                "✅ Successfully attached probe {} to {}",
+                prog_name, attach_point
+            );
+        }
+
         Ok(Self {
             bpf: Arc::new(RwLock::new(bpf)),
         })
     }
 
-    pub async fn view_bandwidth(&self, pid: i32) -> Result<(u64, u64), ErrorArrayItem> {
+    pub async fn view_bandwidth(&self, pid: u32) -> Result<(String, String), ErrorArrayItem> {
         let mut bpf = self.bpf.try_write().map_err(|err| {
             ErrorArrayItem::new(
                 Errors::GeneralError,
@@ -86,10 +90,10 @@ impl BandwidthTracker {
             .map_err(|e| ErrorArrayItem::new(Errors::GeneralError, e.to_string()))?;
 
         let stats = map
-            .get(&(pid as u32), 0)
+            .get(&(pid), 0)
             .map_err(|e| ErrorArrayItem::new(Errors::GeneralError, e.to_string()))?;
 
-        Ok((stats.rx_bytes, stats.tx_bytes))
+        Ok((format_bytes(stats.rx_bytes), format_bytes(stats.tx_bytes)))
     }
 
     pub async fn track_pid(&self, pid: u32) -> Result<(), ErrorArrayItem> {
@@ -117,5 +121,24 @@ impl BandwidthTracker {
             Ok(_) => Ok(()),
             Err(err) => Err(ErrorArrayItem::new(Errors::GeneralError, err.to_string())),
         }
+    }
+}
+
+/// Helper function to format byte counts into human-readable strings.
+fn format_bytes(bytes: u64) -> String {
+    const KB: f64 = 1024.0;
+    const MB: f64 = KB * 1024.0;
+    const GB: f64 = MB * 1024.0;
+
+    let bytes_f64 = bytes as f64;
+
+    if bytes_f64 >= GB {
+        format!("{:.2} GB", bytes_f64 / GB)
+    } else if bytes_f64 >= MB {
+        format!("{:.2} MB", bytes_f64 / MB)
+    } else if bytes_f64 >= KB {
+        format!("{:.2} KB", bytes_f64 / KB)
+    } else {
+        format!("{} B", bytes)
     }
 }
