@@ -1,5 +1,6 @@
 // Application control locks
 
+use std::sync::RwLock;
 use std::{sync::Arc, time::Duration};
 
 use crate::applications::child::{
@@ -7,19 +8,22 @@ use crate::applications::child::{
 };
 use crate::applications::resolve::{resolve_client_applications, resolve_system_applications};
 use artisan_middleware::aggregator::{save_registered_apps, AppStatus};
+use artisan_middleware::dusa_collection_utils::errors::Errors;
 use artisan_middleware::dusa_collection_utils::logger::LogLevel;
 use artisan_middleware::dusa_collection_utils::types::rwarc::LockWithTimeout;
 use artisan_middleware::state_persistence::AppState;
 use artisan_middleware::{control::ToggleControl, dusa_collection_utils::errors::ErrorArrayItem};
 use artisan_middleware::{dusa_collection_utils::log, identity::Identifier};
 use once_cell::sync::Lazy;
-use tokio::sync::Notify;
+use tokio::sync::{Notify, OnceCell};
 use tokio::time::sleep;
 
+use super::ebpf::BandwidthTracker;
 use super::portal::PortalAddr;
 
 #[allow(dead_code)]
-pub static APPLICATION_CONTROLS: Lazy<Arc<Controls>> = Lazy::new(|| Arc::new(Controls::new()));
+pub static APPLICATION_CONTROLS: OnceCell<Arc<Controls>> = OnceCell::const_new();
+// pub static APPLICATION_CONTROLS: Lazy<Arc<Controls>> = Lazy::new(|| Arc::new(Controls::new()));
 pub static PORTAL_CONTROLS: Lazy<LockWithTimeout<PortalState>> =
     Lazy::new(|| LockWithTimeout::new(PortalState::new()));
 // Diffrent locks for network communications and array locks
@@ -30,6 +34,7 @@ pub struct Controls {
     communication_lock: Arc<ToggleControl>,
     reload_notify: Arc<Notify>,
     shutdown_notify: Arc<Notify>,
+    kernel_app: BandwidthTracker,
 }
 
 /// Struct to manage the portal's state and ensure proper linkage and timing
@@ -104,12 +109,31 @@ impl PortalState {
 }
 
 impl Controls {
-    pub fn new() -> Self {
-        Self {
+    async fn new() -> Result<Self, ErrorArrayItem> {
+        Ok(Self {
             status_lock: Arc::new(ToggleControl::new()),
             communication_lock: Arc::new(ToggleControl::new()),
             reload_notify: Arc::new(Notify::new()),
             shutdown_notify: Arc::new(Notify::new()),
+            kernel_app: BandwidthTracker::new().await?,
+        })
+    }
+
+    pub async fn initialize_controls() -> Result<(), ErrorArrayItem> {
+        let controls = Controls::new().await?;
+        APPLICATION_CONTROLS
+            .set(Arc::new(controls))
+            .map_err(|err| ErrorArrayItem::new(Errors::GeneralError, err.to_string()))?;
+        Ok(())
+    }
+
+    pub async fn get_controls() -> Result<Arc<Controls>, ErrorArrayItem> {
+        match APPLICATION_CONTROLS.get() {
+            Some(app) => Ok(app.clone()),
+            None => {
+                _ = Self::initialize_controls().await?;
+                Ok(APPLICATION_CONTROLS.get().unwrap().clone())
+            },
         }
     }
 
