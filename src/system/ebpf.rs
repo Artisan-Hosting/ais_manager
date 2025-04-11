@@ -26,14 +26,18 @@ impl BandwidthTracker {
         let mut bpf = Bpf::load(bpf_data)
             .map_err(|err| ErrorArrayItem::new(Errors::GeneralError, err.to_string()))?;
 
-        for probe in [
-            "bpf_tcp_sendmsg",
-            "bpf_tcp_recvmsg",
-            "bpf_udp_sendmsg",
-            "bpf_udp_recvmsg",
-        ] {
-            let bpf: Result<&mut Program, ErrorArrayItem> =
-                if let Some(bpf) = bpf.program_mut(probe) {
+            let probes = [
+                ("bpf_tcp_sendmsg", "tcp_sendmsg"),
+                ("bpf_tcp_recvmsg", "tcp_cleanup_rbuf"),
+                ("bpf_udp_sendmsg", "udp_sendmsg"),
+                ("bpf_udp_recvmsg", "udp_recvmsg"),
+            ];
+
+
+            for (prog_name, attach_point) in probes {
+                
+                let bpf: Result<&mut Program, ErrorArrayItem> =
+                if let Some(bpf) = bpf.program_mut(prog_name) {
                     Ok(bpf)
                 } else {
                     Err(ErrorArrayItem::new(
@@ -42,23 +46,23 @@ impl BandwidthTracker {
                     ))
                 };
 
-            let program: &mut KProbe =
-                bpf?.try_into()
+                let program: &mut KProbe =
+                bpf.unwrap().try_into()
                     .map_err(|err: aya::programs::ProgramError| {
                         ErrorArrayItem::new(Errors::GeneralError, err.to_string())
                     })?;
-
-            program.load().map_err(|err: aya::programs::ProgramError| {
-                ErrorArrayItem::new(Errors::GeneralError, err.to_string())
-            })?;
-
-            program
-                .attach(probe, 0)
-                .map_err(|err: aya::programs::ProgramError| {
-                    ErrorArrayItem::new(Errors::GeneralError, err.to_string())
-                })?;
-        }
-
+            
+                program
+                    .load()
+                    .map_err(|e: aya::programs::ProgramError| ErrorArrayItem::new(Errors::GeneralError, e.to_string()))?;
+            
+                program
+                    .attach(attach_point, 0)
+                    .map_err(|e: aya::programs::ProgramError| ErrorArrayItem::new(Errors::GeneralError, e.to_string()))?;
+            
+                println!("✅ Successfully attached probe {} to {}", prog_name, attach_point);
+            }
+            
         Ok(Self {
             bpf: Arc::new(RwLock::new(bpf)),
         })
