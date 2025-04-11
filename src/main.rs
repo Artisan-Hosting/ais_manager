@@ -53,7 +53,13 @@ async fn main() -> Result<(), ErrorArrayItem> {
     }
 
     // seting up trackers
-    let application_controls: Arc<Controls> = Arc::new(Controls::new());
+    match Controls::initialize_controls().await {
+        Ok(controls) => Arc::new(controls),
+        Err(err) => return Err(err),
+    };
+
+    let application_controls: Arc<Controls> = Controls::get_controls().await?;
+    
 
     // setting up controls and signal monitoring
     application_controls.start_signal_monitors();
