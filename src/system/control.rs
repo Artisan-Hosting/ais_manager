@@ -34,7 +34,7 @@ pub struct Controls {
     communication_lock: Arc<ToggleControl>,
     reload_notify: Arc<Notify>,
     shutdown_notify: Arc<Notify>,
-    kernel_app: BandwidthTracker,
+    pub kernel_app: BandwidthTracker,
 }
 
 /// Struct to manage the portal's state and ensure proper linkage and timing
