@@ -1,6 +1,4 @@
 // Application control locks
-
-use std::sync::RwLock;
 use std::{sync::Arc, time::Duration};
 
 use crate::applications::child::{
