@@ -8,6 +8,7 @@ use artisan_middleware::dusa_collection_utils::errors::Errors;
 use artisan_middleware::dusa_collection_utils::logger::LogLevel;
 use artisan_middleware::dusa_collection_utils::types::pathtype::PathType;
 use artisan_middleware::dusa_collection_utils::types::rwarc::LockWithTimeout;
+use artisan_middleware::historics::UsageLedger;
 use artisan_middleware::state_persistence::AppState;
 use artisan_middleware::{control::ToggleControl, dusa_collection_utils::errors::ErrorArrayItem};
 use artisan_middleware::{dusa_collection_utils::log, identity::Identifier};
@@ -20,12 +21,14 @@ use super::portal::PortalAddr;
 use super::state::get_state_path;
 
 pub static GLOBAL_STATE: OnceCell<Arc<GlobalState>> = OnceCell::const_new();
+pub const LEDGER_PATH: &str = "/opt/artisan/ladger.json"; // make this encrypted at some point
 
 pub struct GlobalState {
     pub signals: Arc<Signals>,
     pub locks: Arc<Locks>,
     pub portal_state: PortalState,
     pub network_monitor: Arc<BandwidthTracker>,
+    pub ledger: LockWithTimeout<UsageLedger>,
     pub app_state: Arc<RwLock<AppState>>,
     pub app_state_path: PathType,
 }
@@ -37,6 +40,7 @@ impl GlobalState {
         let locks: Arc<Locks> = Arc::new(Locks::new());
         let portal_state: PortalState = PortalState::new()?;
         let network_monitor: Arc<BandwidthTracker> = Arc::new(BandwidthTracker::new().await?);
+        let ledger: UsageLedger = UsageLedger::load_from_disk(LEDGER_PATH).unwrap_or_else(|_| UsageLedger::new());
 
         let app_state_data: (Arc<RwLock<AppState>>, PathType) = {
             let config: AppConfig = get_config();
@@ -66,6 +70,7 @@ impl GlobalState {
             locks,
             app_state: app_state_data.0,
             app_state_path: app_state_data.1,
+            ledger: LockWithTimeout::new(ledger),
         };
 
         if let Err(err) = GLOBAL_STATE.set(Arc::new(state)) {

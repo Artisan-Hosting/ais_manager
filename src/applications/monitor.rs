@@ -19,6 +19,7 @@ use crate::applications::resolve::{
     resolve_client_applications, resolve_system_applications, SystemApplication,
 };
 use crate::system::control::GlobalState;
+use crate::system::ebpf::{debug_print_aggregated, TrafficStats};
 
 use super::child::{SupervisedProcesses, APP_STATUS_ARRAY, SYSTEM_APPLICATION_ARRAY};
 use super::pid::reclaim_child;
@@ -26,7 +27,7 @@ use super::resolve::ClientApplication;
 
 pub async fn monitor_application_resource_usage(
     handler: LockWithTimeout<HashMap<Stringy, SupervisedProcesses>>,
-    gs: &Arc<GlobalState>
+    gs: &Arc<GlobalState>,
 ) -> Result<(), ErrorArrayItem> {
     let application_handler_read_lock = handler.try_read().await?;
 
@@ -36,7 +37,7 @@ pub async fn monitor_application_resource_usage(
         pid: u32,
         monitor: &ResourceMonitorLock,
         app_status_array_write_lock: &mut HashMap<Stringy, AppStatus>,
-        gs: &Arc<GlobalState>
+        gs: &Arc<GlobalState>,
     ) -> Result<(), ErrorArrayItem> {
         match monitor.0.try_write_with_timeout(None).await {
             Ok(mut monitor_lock) => {
@@ -50,16 +51,32 @@ pub async fn monitor_application_resource_usage(
                 );
                 monitor_lock.cpu = usage.0;
                 monitor_lock.ram = usage.1;
-                
-                let net_usage = gs.network_monitor.view_bandwidth(pid).await?;
-                log!(LogLevel::Info, "{} -> Sent: {} : RECV: {}", pid, net_usage.0, net_usage.1);
+
+                let net_usage: HashMap<String, TrafficStats> =
+                    gs.network_monitor.aggregate_bandwidth_by_service().await?;
+                let service_network: Option<artisan_middleware::aggregator::NetworkUsage> =
+                    if let Some(net) = net_usage.get(&name.to_string()) {
+                        Some(net.to_network_usage())
+                    } else {
+                        None
+                    };
+
+                // update ledger
+                let current: Metrics = Metrics {
+                    cpu_usage: monitor_lock.cpu,
+                    memory_usage: monitor_lock.ram,
+                    other: service_network,
+                };
+
+                gs.ledger
+                    .try_write()
+                    .await?
+                    .update_application_usage(name.clone(), current.clone());
+
+                debug_print_aggregated(net_usage);
 
                 if let Some(app_status) = app_status_array_write_lock.get_mut(name) {
-                    app_status.metrics = Some(Metrics {
-                        cpu_usage: usage.0,
-                        memory_usage: usage.1,
-                        other: None,
-                    });
+                    app_status.metrics = Some(current);
                 }
                 Ok(())
             }
@@ -82,7 +99,7 @@ pub async fn monitor_application_resource_usage(
                     pid,
                     &child.monitor,
                     &mut app_status_array_write_lock,
-                    &gs.clone()
+                    &gs.clone(),
                 )
                 .await
                 {
@@ -104,7 +121,7 @@ pub async fn monitor_application_resource_usage(
                     pid,
                     &process.monitor,
                     &mut app_status_array_write_lock,
-                    &gs.clone()
+                    &gs.clone(),
                 )
                 .await
                 {
@@ -224,7 +241,6 @@ pub async fn handle_dead_applications() -> Result<(), ErrorArrayItem> {
         "client",
     );
 
-
     Ok(())
 }
 
@@ -281,7 +297,7 @@ pub async fn handle_new_system_applications(gs: &Arc<GlobalState>) -> Result<(),
                         app.metrics = None;
                     }
                 }
-                
+
                 drop(app_status_array_write_lock);
 
                 // Adding to handler
@@ -452,7 +468,7 @@ pub async fn update_client_state(gs: &Arc<GlobalState>) -> Result<(), ErrorArray
             calculate_uptime(mut_client_status.1, &state);
         }
     }
-    
+
     drop(application_status_array_write_lock);
 
     Ok(())
