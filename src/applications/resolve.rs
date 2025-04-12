@@ -355,7 +355,7 @@ pub async fn resolve_client_applications(gs: &Arc<GlobalState>) -> Result<(), Er
 }
 
 pub async fn track_pids(gs: &Arc<GlobalState>) -> Result<(), ErrorArrayItem> {
-    let entries = fs::read_dir("/sys/fs/cgroup/system.slice/").map_err(ErrorArrayItem::from)?;
+    let entries = fs::read_dir("/sys/fs/cgroup/artisan.slice/").map_err(ErrorArrayItem::from)?;
 
     for entry in entries {
         let path = entry?.path();
