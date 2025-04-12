@@ -14,6 +14,8 @@ use artisan_middleware::{
     state_persistence::AppState,
 };
 use once_cell::sync::Lazy;
+use std::fs;
+use std::io::{BufRead, BufReader};
 use std::{collections::HashMap, time::Duration};
 use tokio::process::Command;
 
@@ -634,4 +636,18 @@ pub async fn populate_initial_state_lock(state: &mut AppState) -> Result<(), Err
     }
 
     Ok(())
+}
+
+pub fn pids_in_cgroup(service_name: &str) -> std::io::Result<Vec<u32>> {
+    let path = format!("/sys/fs/cgroup/system.slice/{}.service/cgroup.procs", service_name);
+    let file = fs::File::open(path)?;
+    let reader = BufReader::new(file);
+
+    let pids = reader
+        .lines()
+        .filter_map(|line| line.ok())
+        .filter_map(|line| line.parse::<u32>().ok())
+        .collect();
+
+    Ok(pids)
 }

@@ -4,7 +4,7 @@ use applications::{
         handle_dead_applications, handle_new_client_applications, handle_new_system_applications,
         monitor_application_resource_usage, update_client_state, update_system_state,
     },
-    resolve::{resolve_client_applications, resolve_system_applications},
+    resolve::{resolve_client_applications, resolve_system_applications, track_pids},
 };
 use artisan_middleware::dusa_collection_utils::{
     errors::ErrorArrayItem,
@@ -90,6 +90,20 @@ async fn main() -> Result<(), ErrorArrayItem> {
                     log!(LogLevel::Info, "CTRL + C received");
                     global_state.signals.signal_shutdown();
                 }
+            }
+        }
+    });
+
+    // Network Monitor tracking 
+    tokio::spawn(async move {
+        let interval = tokio::time::interval(std::time::Duration::from_secs(5));
+        tokio::pin!(interval);
+    
+        loop {
+            interval.as_mut().tick().await;
+    
+            if let Err(err) = track_pids(&global_state.clone()).await {
+                log!(LogLevel::Error, "Failed to refresh cgroup PIDs: {}", err.err_mesg);
             }
         }
     });

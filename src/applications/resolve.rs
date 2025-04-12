@@ -15,7 +15,7 @@ use tokio::task;
 
 use crate::system::control::GlobalState;
 
-use super::child::{CLIENT_APPLICATION_ARRAY, SYSTEM_APPLICATION_ARRAY};
+use super::child::{pids_in_cgroup, CLIENT_APPLICATION_ARRAY, SYSTEM_APPLICATION_ARRAY};
 
 // pub static SYSTEMAPPLICATIONS: [&'static str; 4] = ["gitmon", "ids", "self", "messenger"];
 pub static SYSTEMAPPLICATIONS: [&'static str; 3] = ["gitmon", "self", "mailler"];
@@ -348,23 +348,29 @@ pub async fn resolve_client_applications(gs: &Arc<GlobalState>) -> Result<(), Er
     > = CLIENT_APPLICATION_ARRAY.try_write().await?;
 
     for app in results {
-        if app.config.get_status() == Status::Running
-            || app.config.get_status() == Status::Building
-            || app.config.get_status() == Status::Idle
-            || app.config.get_status() == Status::Starting
-        {
-            let pid = app.config.get_pid();
-            if let Err(err) = gs.network_monitor.track_pid(pid).await {
-                log!(
-                    LogLevel::Error,
-                    "Failed to start tracking: {} -> {}",
-                    pid,
-                    err.err_mesg
-                );
+        client_application_array_write_lock.insert(app.clone().name, app);
+    }
+
+    Ok(())
+}
+
+pub async fn track_pids(gs: &Arc<GlobalState>) -> Result<(), ErrorArrayItem> {
+    let entries = fs::read_dir("/sys/fs/cgroup/system.slice/").map_err(ErrorArrayItem::from)?;
+
+    for entry in entries {
+        let path = entry?.path();
+        if let Some(name) = path.file_name().and_then(|n| n.to_str()) {
+            if name.starts_with("ais_") && name.ends_with(".service") {
+                // Extract service name
+                let service_name = name.trim_end_matches(".service");
+                // Read PIDs and track
+                if let Ok(pids) = pids_in_cgroup(service_name) {
+                    for pid in pids {
+                        gs.network_monitor.track_pid(pid).await?;
+                    }
+                }
             }
         }
-
-        client_application_array_write_lock.insert(app.clone().name, app);
     }
 
     Ok(())

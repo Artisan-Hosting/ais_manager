@@ -15,6 +15,13 @@ struct {
     __type(value, struct traffic_stats);
 } pid_traffic_map SEC(".maps");
 
+struct {
+    __uint(type, BPF_MAP_TYPE_HASH);
+    __uint(max_entries, 1024);
+    __type(key, __u64); // Cgroup ID
+    __type(value, struct traffic_stats);
+} cgroup_traffic_map SEC(".maps");
+
 // Common function to update stats
 static __always_inline void update_stats(__u32 pid, ssize_t bytes, bool is_tx) {
     if (bytes <= 0)
@@ -75,5 +82,40 @@ int bpf_udp_recvmsg(struct pt_regs *ctx) {
     update_stats(pid, copied, false);
     return 0;
 }
+
+SEC("cgroup_skb/ingress")
+int count_ingress(struct __sk_buff *skb) {
+    __u64 cgid = bpf_get_current_cgroup_id();
+
+    struct traffic_stats *stats = bpf_map_lookup_elem(&cgroup_traffic_map, &cgid);
+    if (!stats) {
+        struct traffic_stats zero = {};
+        bpf_map_update_elem(&cgroup_traffic_map, &cgid, &zero, BPF_ANY);
+        stats = bpf_map_lookup_elem(&cgroup_traffic_map, &cgid);
+        if (!stats)
+            return 1;
+    }
+
+    __sync_fetch_and_add(&stats->rx_bytes, skb->len);
+    return 1;
+}
+
+SEC("cgroup_skb/egress")
+int count_egress(struct __sk_buff *skb) {
+    __u64 cgid = bpf_get_current_cgroup_id();
+
+    struct traffic_stats *stats = bpf_map_lookup_elem(&cgroup_traffic_map, &cgid);
+    if (!stats) {
+        struct traffic_stats zero = {};
+        bpf_map_update_elem(&cgroup_traffic_map, &cgid, &zero, BPF_ANY);
+        stats = bpf_map_lookup_elem(&cgroup_traffic_map, &cgid);
+        if (!stats)
+            return 1;
+    }
+
+    __sync_fetch_and_add(&stats->tx_bytes, skb->len);
+    return 1;
+}
+
 
 char LICENSE[] SEC("license") = "GPL";
