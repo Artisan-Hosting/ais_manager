@@ -21,7 +21,7 @@ use super::portal::PortalAddr;
 use super::state::get_state_path;
 
 pub static GLOBAL_STATE: OnceCell<Arc<GlobalState>> = OnceCell::const_new();
-pub const LEDGER_PATH: &str = "/opt/artisan/ladger.json"; // make this encrypted at some point
+pub const LEDGER_PATH: &str = "/opt/artisan/ledger.json"; // make this encrypted at some point
 
 pub struct GlobalState {
     pub signals: Arc<Signals>,
