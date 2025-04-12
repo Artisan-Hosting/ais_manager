@@ -83,39 +83,4 @@ int bpf_udp_recvmsg(struct pt_regs *ctx) {
     return 0;
 }
 
-SEC("cgroup_skb/ingress")
-int count_ingress(struct __sk_buff *skb) {
-    __u64 cgid = bpf_get_current_cgroup_id();
-
-    struct traffic_stats *stats = bpf_map_lookup_elem(&cgroup_traffic_map, &cgid);
-    if (!stats) {
-        struct traffic_stats zero = {};
-        bpf_map_update_elem(&cgroup_traffic_map, &cgid, &zero, BPF_ANY);
-        stats = bpf_map_lookup_elem(&cgroup_traffic_map, &cgid);
-        if (!stats)
-            return 1;
-    }
-
-    __sync_fetch_and_add(&stats->rx_bytes, skb->len);
-    return 1;
-}
-
-SEC("cgroup_skb/egress")
-int count_egress(struct __sk_buff *skb) {
-    __u64 cgid = bpf_get_current_cgroup_id();
-
-    struct traffic_stats *stats = bpf_map_lookup_elem(&cgroup_traffic_map, &cgid);
-    if (!stats) {
-        struct traffic_stats zero = {};
-        bpf_map_update_elem(&cgroup_traffic_map, &cgid, &zero, BPF_ANY);
-        stats = bpf_map_lookup_elem(&cgroup_traffic_map, &cgid);
-        if (!stats)
-            return 1;
-    }
-
-    __sync_fetch_and_add(&stats->tx_bytes, skb->len);
-    return 1;
-}
-
-
 char LICENSE[] SEC("license") = "GPL";
