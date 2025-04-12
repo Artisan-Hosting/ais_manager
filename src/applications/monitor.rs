@@ -9,6 +9,7 @@ use artisan_middleware::process_manager::is_pid_active;
 use artisan_middleware::resource_monitor::ResourceMonitorLock;
 use artisan_middleware::state_persistence::AppState;
 use std::collections::{HashMap, HashSet};
+use std::sync::Arc;
 use std::time::Duration;
 
 use crate::applications::child::{
@@ -17,6 +18,7 @@ use crate::applications::child::{
 use crate::applications::resolve::{
     resolve_client_applications, resolve_system_applications, SystemApplication,
 };
+use crate::system::control::GlobalState;
 
 use super::child::{SupervisedProcesses, APP_STATUS_ARRAY, SYSTEM_APPLICATION_ARRAY};
 use super::pid::reclaim_child;
@@ -24,6 +26,7 @@ use super::resolve::ClientApplication;
 
 pub async fn monitor_application_resource_usage(
     handler: LockWithTimeout<HashMap<Stringy, SupervisedProcesses>>,
+    gs: &Arc<GlobalState>
 ) -> Result<(), ErrorArrayItem> {
     let application_handler_read_lock = handler.try_read().await?;
 
@@ -298,9 +301,9 @@ pub async fn handle_new_system_applications() -> Result<(), ErrorArrayItem> {
     Ok(())
 }
 
-pub async fn handle_new_client_applications(state: &mut AppState) -> Result<(), ErrorArrayItem> {
+pub async fn handle_new_client_applications(gs: &Arc<GlobalState>) -> Result<(), ErrorArrayItem> {
     // resolve current applications
-    resolve_client_applications(&state.config).await?;
+    resolve_client_applications(&gs.clone()).await?;
 
     let mut client_handler_write_lock: tokio::sync::RwLockWriteGuard<
         '_,
@@ -390,9 +393,10 @@ pub async fn handle_new_client_applications(state: &mut AppState) -> Result<(), 
     Ok(())
 }
 
-pub async fn update_client_state(sys_state: &mut AppState) -> Result<(), ErrorArrayItem> {
+pub async fn update_client_state(gs: &Arc<GlobalState>) -> Result<(), ErrorArrayItem> {
     // Updating state files for system applications
-    resolve_client_applications(&sys_state.clone().config).await?;
+
+    resolve_client_applications(&gs.clone()).await?;
 
     let mut application_status_array_write_lock: tokio::sync::RwLockWriteGuard<
         '_,
