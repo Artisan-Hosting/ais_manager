@@ -34,7 +34,7 @@ impl BandwidthTracker {
             ));
         }
 
-        let bpf_data = include_bytes_aligned!("../ebpf/prog.bpf.o");
+        let bpf_data = include_bytes_aligned!("../ebpf/network.o");
         let mut bpf = Bpf::load(bpf_data)
             .map_err(|err| ErrorArrayItem::new(Errors::GeneralError, err.to_string()))?;
 

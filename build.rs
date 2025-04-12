@@ -31,8 +31,8 @@ fn main() {
             "-target", "bpf",
             "-D__TARGET_ARCH_x86",
             "-I", "src/ebpf",
-            "-c", "src/ebpf/prog.c",
-            "-o", "src/ebpf/prog.bpf.o",
+            "-c", "src/ebpf/network.c",
+            "-o", "src/ebpf/network.o",
             "-Wall",
             "-Wno-unused",
             "-Wno-unused-function",
@@ -48,6 +48,6 @@ fn main() {
 
     assert!(status.success(), "eBPF program compilation failed");
 
-    println!("cargo:rerun-if-changed=src/ebpf/prog.c");
+    println!("cargo:rerun-if-changed=src/ebpf/network.c");
     println!("cargo:rerun-if-changed=src/ebpf/vmlinux.h");
 }
