@@ -31,7 +31,7 @@ where
 
 pub async fn reload_callback(gs: &Arc<GlobalState>) {
     log!(LogLevel::Info, "Reloading");
-    gs.locks.pause_network();
+    gs.locks.pause_network().await;
     tokio::time::sleep(Duration::from_millis(300)).await;
 
     // Clearing handlers
@@ -53,19 +53,8 @@ pub async fn reload_callback(gs: &Arc<GlobalState>) {
         );
     }
 
-    match &gs.get_state_clone().await {
-        Ok(state) => {
-            if let Err(err) = resolve_client_applications(&state.config).await {
-                log!(LogLevel::Error, "{}", err);
-            }
-        }
-        Err(err) => {
-            log!(
-                LogLevel::Warn,
-                "Shutdown dirty, Failed to read the app state data: {}",
-                err
-            );
-        }
+    if let Err(err) = resolve_client_applications(&gs.clone()).await {
+        log!(LogLevel::Error, "{}", err);
     }
 
     if let Err(err) = resolve_system_applications().await {
@@ -73,14 +62,14 @@ pub async fn reload_callback(gs: &Arc<GlobalState>) {
     }
 
     log!(LogLevel::Info, "Reloaded!");
-    gs.locks.resume_network();
+    gs.locks.resume_network().await;
 }
 
 pub async fn shutdown_callback(gs: &Arc<GlobalState>) {
     log!(LogLevel::Info, "Shutting down gracefully");
     tokio::time::sleep(Duration::from_millis(200)).await;
 
-    gs.locks.pause_network();
+    gs.locks.pause_network().await;
 
     // Clearing the handlers
     let client_handler = &CLIENT_APPLICATION_HANDLER.clone();
@@ -108,7 +97,7 @@ pub async fn shutdown_callback(gs: &Arc<GlobalState>) {
     let mut app_array: Vec<AppStatus> = Vec::new();
 
     if let Ok(array_read) = app_status_array.try_read().await {
-        array_read
+        _ = array_read
             .clone()
             .into_iter()
             .map(|app| app_array.push(app.1));
