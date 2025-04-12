@@ -110,7 +110,7 @@ async fn main() -> Result<(), ErrorArrayItem> {
 
     // Network Monitor cleaning
     tokio::spawn(async move {
-        let mut interval = tokio::time::interval(std::time::Duration::from_secs(30));
+        let mut interval = tokio::time::interval(std::time::Duration::from_secs(1));
     
         loop {
             interval.tick().await;
