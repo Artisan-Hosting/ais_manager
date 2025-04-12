@@ -1,11 +1,8 @@
+use artisan_middleware::dusa_collection_utils::errors::Errors;
 use artisan_middleware::dusa_collection_utils::{errors::ErrorArrayItem, log};
 use artisan_middleware::{
     aggregator::{AppMessage, Command, CommandResponse, CommandType},
-    config::AppConfig,
-    dusa_collection_utils::{
-        logger::LogLevel,
-        types::{pathtype::PathType, stringy::Stringy},
-    },
+    dusa_collection_utils::{logger::LogLevel, types::stringy::Stringy},
     portal::ManagerData,
     state_persistence::AppState,
 };
@@ -18,21 +15,16 @@ use simple_comms::{
 use std::{net::SocketAddr, sync::Arc, time::Duration};
 use tokio::net::TcpStream;
 
+use crate::system::control::{GlobalState, GLOBAL_STATE};
 use crate::{
     applications::{
         child::APP_STATUS_ARRAY,
         start_stop::{reload_application, start_application, stop_application},
     },
-    system::{control::Controls, manager::get_manager_data},
+    system::manager::get_manager_data,
 };
 
-pub async fn process_tcp(
-    mut connection: (TcpStream, SocketAddr),
-    application_controls: Arc<Controls>,
-    state: &mut AppState,
-    state_path: &PathType,
-    config: &AppConfig,
-) -> Result<(), ErrorArrayItem> {
+pub async fn process_tcp(mut connection: (TcpStream, SocketAddr)) -> Result<(), ErrorArrayItem> {
     let proto: Proto = Proto::TCP;
 
     let mut buffer = read_until(&mut connection.0, EOL.to_vec()).await?;
@@ -58,18 +50,15 @@ pub async fn process_tcp(
     // }
 
     match recieved_payload {
-        AppMessage::Command(command) => {
-            match command_processor(command, application_controls, state, state_path, config).await
-            {
-                Ok(data) => {
-                    let message: ProtocolMessage<AppMessage> =
-                        ProtocolMessage::new(Flags::ENCRYPTED | Flags::COMPRESSED, data)?;
-                    let message_bytes: Vec<u8> = message.format().await?;
-                    send_data(&mut connection.0, message_bytes, proto).await?;
-                }
-                Err(err) => return Err(err),
+        AppMessage::Command(command) => match command_processor(command).await {
+            Ok(data) => {
+                let message: ProtocolMessage<AppMessage> =
+                    ProtocolMessage::new(Flags::ENCRYPTED | Flags::COMPRESSED, data)?;
+                let message_bytes: Vec<u8> = message.format().await?;
+                send_data(&mut connection.0, message_bytes, proto).await?;
             }
-        }
+            Err(err) => return Err(err),
+        },
 
         _ => {
             // * illegal in this context
@@ -81,14 +70,21 @@ pub async fn process_tcp(
     Ok(())
 }
 
-async fn command_processor(
-    command: Command,
-    application_controls: Arc<Controls>,
-    state: &mut AppState,
-    state_path: &PathType,
-    config: &AppConfig,
-) -> Result<AppMessage, ErrorArrayItem> {
-    if let Err(err) = application_controls
+async fn command_processor(command: Command) -> Result<AppMessage, ErrorArrayItem> {
+    let global_state: &Arc<GlobalState> = match GLOBAL_STATE.get() {
+        Some(gs) => gs,
+        None => {
+            return Err(ErrorArrayItem::new(
+                Errors::AppState,
+                "Failed to get the app state from the global state",
+            ));
+        }
+    };
+
+    let mut app_state: AppState = global_state.get_state_clone().await?;
+
+    if let Err(err) = global_state
+        .locks
         .wait_for_network_control_with_timeout(Duration::from_secs(1))
         .await
     {
@@ -104,7 +100,7 @@ async fn command_processor(
     let app_id: Stringy = command.app_id;
     match command.command_type {
         artisan_middleware::aggregator::CommandType::Start => {
-            match start_application(&app_id, state, state_path, config).await {
+            match start_application(&app_id).await {
                 Ok(_) => {
                     return Ok(AppMessage::Response(CommandResponse {
                         app_id,
@@ -125,7 +121,7 @@ async fn command_processor(
         }
         artisan_middleware::aggregator::CommandType::Stop => {
             if app_id == "ais_manager".into() {
-                application_controls.signal_reload();
+                global_state.signals.signal_reload();
                 return Ok(AppMessage::Response(CommandResponse {
                     app_id,
                     command_type: CommandType::Restart,
@@ -157,7 +153,7 @@ async fn command_processor(
         artisan_middleware::aggregator::CommandType::Restart => {
             // Check if the request is a self restart first
             if app_id == "ais_manager".into() {
-                application_controls.signal_reload();
+                global_state.signals.signal_reload();
                 return Ok(AppMessage::Response(CommandResponse {
                     app_id,
                     command_type: CommandType::Restart,
@@ -194,7 +190,6 @@ async fn command_processor(
             if store_lock.contains_key(&app_id) {
                 match store_lock.get(&app_id) {
                     Some(app) => {
-                        
                         let mut app = app.clone();
                         app.timestamp = 0;
 
@@ -258,7 +253,7 @@ async fn command_processor(
         }
 
         artisan_middleware::aggregator::CommandType::Info => {
-            let manager_data: ManagerData = get_manager_data(state).await?;
+            let manager_data: ManagerData = get_manager_data(&mut app_state).await?;
             return Ok(AppMessage::ManagerInfo(manager_data));
         }
 
