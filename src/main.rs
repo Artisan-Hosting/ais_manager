@@ -9,19 +9,18 @@ use applications::{
 use artisan_middleware::dusa_collection_utils::{
     errors::ErrorArrayItem,
     logger::LogLevel,
-    types::{pathtype::PathType, rwarc::LockWithTimeout, stringy::Stringy},
+    types::{rwarc::LockWithTimeout, stringy::Stringy},
 };
-use artisan_middleware::{aggregator::AppStatus, config::AppConfig, state_persistence::AppState};
+use artisan_middleware::{aggregator::AppStatus, state_persistence::AppState};
 use artisan_middleware::{dusa_collection_utils::log, identity::Identifier};
 use network::process_tcp;
 use std::{collections::HashMap, sync::Arc, time::Duration};
 use system::{
-    config::{generate_state, get_config},
-    control::Controls,
+    control::{GlobalState, GLOBAL_STATE},
     portal::connect_with_portal,
-    state::{get_state_path, save_state},
+    signals::{handle_signal, reload_callback, shutdown_callback},
 };
-use tokio::{net::TcpListener, time::sleep};
+use tokio::{net::TcpListener, signal::unix::SignalKind, time::sleep};
 
 mod applications;
 mod network;
@@ -31,12 +30,13 @@ pub type AppStatusArray = LockWithTimeout<HashMap<Stringy, AppStatus>>;
 
 #[tokio::main]
 async fn main() -> Result<(), ErrorArrayItem> {
+    GlobalState::initialize_global_state().await?;
+    let global_state: &Arc<GlobalState> = GLOBAL_STATE.get().unwrap();
+    let mut app_state: AppState = global_state.get_state_clone().await?;
+
     // loading configuration and state persistence
-    let config: AppConfig = get_config();
-    let mut state: AppState = generate_state(&config).await;
-    let state_path: PathType = get_state_path(&config);
-    if config.debug_mode {
-        log!(LogLevel::Debug, "\n{}", state);
+    if app_state.config.debug_mode {
+        log!(LogLevel::Debug, "\n{}", app_state);
     }
 
     {
@@ -47,37 +47,69 @@ async fn main() -> Result<(), ErrorArrayItem> {
         }
     }
     {
-        resolve_client_applications(&state.config).await?;
+        resolve_client_applications(&app_state.config).await?;
         resolve_system_applications().await?;
-        populate_initial_state_lock(&mut state).await?;
+        populate_initial_state_lock(&mut app_state).await?;
     }
 
-    // seting up trackers
-    match Controls::initialize_controls().await {
-        Ok(controls) => Arc::new(controls),
-        Err(err) => return Err(err),
-    };
+    // seting up signal listeners
+    tokio::spawn(async move {
+        if let Err(e) = handle_signal(
+            SignalKind::hangup(),
+            || global_state.signals.signal_reload(),
+            "SIGHUP",
+        )
+        .await
+        {
+            log!(LogLevel::Error, "Error handling SIGHUP: {}", e);
+        }
+    });
 
-    let application_controls: Arc<Controls> = Controls::get_controls().await?;
-    
+    tokio::spawn(async move {
+        if let Err(e) = handle_signal(
+            SignalKind::user_defined1(),
+            || global_state.signals.signal_shutdown(),
+            "SIGUSR1",
+        )
+        .await
+        {
+            log!(LogLevel::Error, "Error handling SIGUSR1: {}", e);
+        }
+    });
 
-    // setting up controls and signal monitoring
-    application_controls.start_signal_monitors();
-    application_controls
-        .clone()
-        .start_contol_monitor(state.clone());
-
-    // Update metrics
-    let mut state_clone = state.clone();
-    // let config_clone = config.clone();
     tokio::spawn(async move {
         loop {
+            tokio::select! {
+                _ = global_state.signals.reload_notify.notified() => {
+                    reload_callback(&global_state).await;
+                }
+                _ = global_state.signals.shutdown_notify.notified() => {
+                    shutdown_callback(&global_state).await;
+                }
+                _ = tokio::signal::ctrl_c() => {
+                    log!(LogLevel::Info, "CTRL + C received");
+                    global_state.signals.signal_shutdown();
+                }
+            }
+        }
+    });
+
+    tokio::spawn(async move {
+        loop {
+            let mut app_state: AppState = match global_state.get_state_clone().await {
+                Ok(state) => state,
+                Err(err) => {
+                    log!(LogLevel::Error, "Failed to get state data skipping periodics: {}", err.err_mesg);
+                    continue;
+                },
+            };
+
             if let Err(err) = handle_new_system_applications().await {
                 log!(LogLevel::Error, "{}", err);
             };
             sleep(Duration::from_millis(150)).await;
 
-            if let Err(err) = handle_new_client_applications(&mut state_clone).await {
+            if let Err(err) = handle_new_client_applications(&mut app_state).await {
                 log!(LogLevel::Error, "{}", err);
             };
             sleep(Duration::from_millis(150)).await;
@@ -101,7 +133,7 @@ async fn main() -> Result<(), ErrorArrayItem> {
             }
             sleep(Duration::from_millis(150)).await;
 
-            if let Err(err) = update_client_state(&mut state_clone).await {
+            if let Err(err) = update_client_state(&mut app_state).await {
                 log!(LogLevel::Error, "{}", err);
             }
             sleep(Duration::from_millis(150)).await;
@@ -114,11 +146,19 @@ async fn main() -> Result<(), ErrorArrayItem> {
     });
 
     // Regiser with portal
-    let mut state_clone = state.clone();
     tokio::spawn(async move {
         loop {
-            if let Err(err) = connect_with_portal(&mut state_clone).await {
-                log!(LogLevel::Error, "{}", err)
+            let app_state: Result<AppState, ErrorArrayItem> = global_state.get_state_clone().await;
+
+            match app_state {
+                Ok(mut state) => {
+                    if let Err(err) = connect_with_portal(&mut state).await {
+                        log!(LogLevel::Error, "Failed to connect with portal: {}", err);
+                    }
+                },
+                Err(err) => {
+                    log!(LogLevel::Error, "Failed to get state: {}", err);
+                },
             }
 
             sleep(Duration::from_secs(30)).await;
@@ -130,20 +170,11 @@ async fn main() -> Result<(), ErrorArrayItem> {
         .await
         .map_err(|err| ErrorArrayItem::from(err))?;
 
-    let state_path_clone = state_path.clone();
-    let config_clone = config.clone();
     loop {
         tokio::select! {
             Ok(conn) = tcp_listener.accept() => {
-                let app_controls = application_controls.clone();
-                let mut state_clone = state.clone();
-                let state_path_clone = state_path_clone.clone();
-                let config_clone = config_clone.clone();
-
-                state.event_counter += 1;
-                save_state(&mut state, &state_path_clone).await;
                 tokio::spawn(async move {
-                    if let Err(err) = process_tcp(conn, app_controls, &mut state_clone, &state_path_clone, &config_clone).await {
+                    if let Err(err) = process_tcp(conn).await {
                         log!(LogLevel::Error, "TCP connection handling panicked: {:?}", err);
                     }
                 });
