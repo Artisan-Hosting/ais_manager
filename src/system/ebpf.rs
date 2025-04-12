@@ -1,10 +1,12 @@
+use artisan_middleware::aggregator::NetworkUsage;
 use artisan_middleware::dusa_collection_utils::errors::{ErrorArrayItem, Errors};
 use artisan_middleware::dusa_collection_utils::log;
 use artisan_middleware::dusa_collection_utils::logger::LogLevel;
 use artisan_middleware::process_manager::is_pid_active;
 use aya::programs::Program;
 use aya::{include_bytes_aligned, programs::KProbe, Bpf};
-use bytemuck::Zeroable; use std::collections::HashMap;
+use bytemuck::Zeroable;
+use std::collections::HashMap;
 // Only derive Zeroable.
 use std::convert::TryInto;
 use std::path::Path;
@@ -21,6 +23,16 @@ pub struct TrafficStats {
 }
 
 unsafe impl aya::Pod for TrafficStats {}
+
+// to avoid adding aya depends to the shared lib
+impl TrafficStats {
+    pub fn to_network_usage(&self) -> NetworkUsage {
+        NetworkUsage {
+            rx_bytes: self.rx_bytes,
+            tx_bytes: self.tx_bytes,
+        }
+    }
+}
 
 #[allow(dead_code)]
 pub struct BandwidthTracker {
@@ -299,10 +311,18 @@ impl BandwidthTracker {
     }
 }
 
-pub fn print_aggregated(service_traffic: HashMap<String, TrafficStats>) {
+pub fn debug_print_aggregated(service_traffic: HashMap<String, TrafficStats>) {
     for (service, stats) in service_traffic {
-        log!(LogLevel::Info, "Service: {}", service);
-        log!(LogLevel::Info, "  RX: {}", BandwidthTracker::format_bytes(stats.rx_bytes));
-        log!(LogLevel::Info, "  TX: {}", BandwidthTracker::format_bytes(stats.tx_bytes));
+        log!(LogLevel::Debug, "Service: {}", service);
+        log!(
+            LogLevel::Debug,
+            "  RX: {}",
+            BandwidthTracker::format_bytes(stats.rx_bytes)
+        );
+        log!(
+            LogLevel::Debug,
+            "  TX: {}",
+            BandwidthTracker::format_bytes(stats.tx_bytes)
+        );
     }
 }
