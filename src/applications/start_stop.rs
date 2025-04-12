@@ -1,30 +1,20 @@
 use std::io;
-use std::sync::Arc;
 use std::time::Duration;
 
 use artisan_middleware::aggregator::AppStatus;
 use artisan_middleware::dusa_collection_utils::errors::{ErrorArrayItem, Errors};
 use artisan_middleware::dusa_collection_utils::log;
 use artisan_middleware::dusa_collection_utils::logger::LogLevel;
-use artisan_middleware::dusa_collection_utils::types::pathtype::PathType;
 use artisan_middleware::dusa_collection_utils::types::stringy::Stringy;
 use artisan_middleware::systemd::SystemdService;
-use artisan_middleware::{aggregator::Status, state_persistence::AppState};
+use artisan_middleware::aggregator::Status;
 use nix::libc::kill;
 
-use crate::applications::child::populate_initial_state_lock;
-use crate::applications::{
-    child::{
+use crate::applications::child::{
         SupervisedProcesses, APP_STATUS_ARRAY, CLIENT_APPLICATION_HANDLER,
         SYSTEM_APPLICATION_HANDLER,
-    },
-    resolve::resolve_system_applications,
-};
-use crate::system::control::GlobalState;
-use crate::system::state::save_state;
+    };
 
-use super::child::{spawn_single_application, CLIENT_APPLICATION_ARRAY, SYSTEM_APPLICATION_ARRAY};
-use super::resolve::{resolve_client_applications, Application};
 
 pub async fn stop_application(app_id: &Stringy) -> Result<(), ErrorArrayItem> {
     let mut app_status_array_write_lock: tokio::sync::RwLockWriteGuard<
