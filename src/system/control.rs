@@ -30,6 +30,7 @@ pub struct GlobalState {
     pub app_state_path: PathType,
 }
 
+#[allow(dead_code)]
 impl GlobalState {
     pub async fn initialize_global_state() -> Result<(), ErrorArrayItem> {
         let signals: Arc<Signals> = Arc::new(Signals::new());
@@ -176,6 +177,7 @@ pub struct PortalIntance {
     intime: bool, // we take note of the addr and time's it requests data
 }
 
+#[allow(dead_code)]
 impl PortalIntance {
     pub fn new(address: PortalAddr) -> PortalIntance {
         PortalIntance {
@@ -204,11 +206,6 @@ impl PortalIntance {
     pub fn get_address(&self) -> PortalAddr {
         self.address.clone()
     }
-
-    //  validates the identity of a given portal
-    // pub async fn validate(&self) -> bool {
-    //     self.identity.verify().await
-    // }
 }
 
 /// Struct to manage the portal's state and ensure proper linkage and timing
@@ -218,6 +215,7 @@ pub struct PortalState {
     lock: LockWithTimeout<HashMap<PortalAddr, PortalIntance>>,
 }
 
+#[allow(dead_code)]
 impl PortalState {
     pub fn new() -> Result<Self, ErrorArrayItem> {
         let array: HashMap<PortalAddr, PortalIntance> = HashMap::new();
