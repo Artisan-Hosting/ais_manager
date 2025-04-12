@@ -1,4 +1,5 @@
 use std::io;
+use std::sync::Arc;
 use std::time::Duration;
 
 use artisan_middleware::aggregator::AppStatus;
@@ -8,7 +9,7 @@ use artisan_middleware::dusa_collection_utils::logger::LogLevel;
 use artisan_middleware::dusa_collection_utils::types::pathtype::PathType;
 use artisan_middleware::dusa_collection_utils::types::stringy::Stringy;
 use artisan_middleware::systemd::SystemdService;
-use artisan_middleware::{aggregator::Status, config::AppConfig, state_persistence::AppState};
+use artisan_middleware::{aggregator::Status, state_persistence::AppState};
 use nix::libc::kill;
 
 use crate::applications::child::populate_initial_state_lock;
@@ -17,12 +18,13 @@ use crate::applications::{
         SupervisedProcesses, APP_STATUS_ARRAY, CLIENT_APPLICATION_HANDLER,
         SYSTEM_APPLICATION_HANDLER,
     },
-    resolve::{resolve_client_applications, resolve_system_applications},
+    resolve::resolve_system_applications,
 };
+use crate::system::control::GlobalState;
 use crate::system::state::save_state;
 
 use super::child::{spawn_single_application, CLIENT_APPLICATION_ARRAY, SYSTEM_APPLICATION_ARRAY};
-use super::resolve::Application;
+use super::resolve::{resolve_client_applications, Application};
 
 pub async fn stop_application(app_id: &Stringy) -> Result<(), ErrorArrayItem> {
     let mut app_status_array_write_lock: tokio::sync::RwLockWriteGuard<
@@ -203,9 +205,6 @@ fn send_reload(pid: i32) -> Result<(), ErrorArrayItem> {
 
 pub async fn start_application(
     app_id: &Stringy,
-    _state: &mut AppState,
-    _state_path: &PathType,
-    _config: &AppConfig,
 ) -> Result<(), ErrorArrayItem> {
     let app_status_array_read_lock = APP_STATUS_ARRAY
         .try_read_with_timeout(Some(Duration::from_secs(20)))
@@ -250,53 +249,53 @@ pub async fn start_application(
         })?
 }
 
-/// Helper to start system applications
-async fn _start_system_application(
-    app_id: &Stringy,
-    state: &mut AppState,
-    state_path: &PathType,
-) -> Result<bool, ErrorArrayItem> {
-    // update the system application index
-    resolve_system_applications().await?;
+// /// Helper to start system applications
+// async fn _start_system_application(
+//     app_id: &Stringy,
+//     state: &mut AppState,
+//     state_path: &PathType,
+// ) -> Result<bool, ErrorArrayItem> {
+//     // update the system application index
+//     resolve_system_applications().await?;
 
-    for sys_app in SYSTEM_APPLICATION_ARRAY
-        .try_read()
-        .await?
-        .clone()
-        .into_iter()
-    {
-        if app_id == &sys_app.0 {
-            spawn_single_application(Application::System(sys_app.1), state, state_path).await?;
-            populate_initial_state_lock(state).await?;
-            save_state(state, state_path).await;
-            return Ok(true);
-        }
-    }
-    Ok(false)
-}
+//     for sys_app in SYSTEM_APPLICATION_ARRAY
+//         .try_read()
+//         .await?
+//         .clone()
+//         .into_iter()
+//     {
+//         if app_id == &sys_app.0 {
+//             spawn_single_application(Application::System(sys_app.1), state, state_path).await?;
+//             populate_initial_state_lock(state).await?;
+//             save_state(state, state_path).await?;
+//             return Ok(true);
+//         }
+//     }
+//     Ok(false)
+// }
 
-/// Helper to start client applications
-async fn _start_client_application(
-    app_id: &Stringy,
-    config: &AppConfig,
-    state: &mut AppState,
-    state_path: &PathType,
-) -> Result<bool, ErrorArrayItem> {
-    // updating the client application index
-    resolve_client_applications(config).await?;
+// // Helper to start client applications
+// async fn _start_client_application__(
+//     app_id: &Stringy,
+//     state: &mut AppState,
+//     state_path: &PathType,
+//     gs: &Arc<GlobalState>
+// ) -> Result<bool, ErrorArrayItem> {
+//     // updating the client application index    
+//     resolve_client_applications(gs).await?;
 
-    for cli_app in CLIENT_APPLICATION_ARRAY
-        .try_read()
-        .await?
-        .clone()
-        .into_iter()
-    {
-        if app_id == &cli_app.0 {
-            spawn_single_application(Application::Client(cli_app.1), state, state_path).await?;
-            populate_initial_state_lock(state).await?;
-            save_state(state, state_path).await;
-            return Ok(true);
-        }
-    }
-    Ok(false)
-}
+//     for cli_app in CLIENT_APPLICATION_ARRAY
+//         .try_read()
+//         .await?
+//         .clone()
+//         .into_iter()
+//     {
+//         if app_id == &cli_app.0 {
+//             spawn_single_application(Application::Client(cli_app.1), state, state_path).await?;
+//             populate_initial_state_lock(state).await?;
+//             save_state(state, state_path).await?;
+//             return Ok(true);
+//         }
+//     }
+//     Ok(false)
+// }

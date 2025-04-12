@@ -47,8 +47,8 @@ async fn main() -> Result<(), ErrorArrayItem> {
         }
     }
     {
-        resolve_client_applications(&app_state.config).await?;
-        resolve_system_applications().await?;
+        resolve_client_applications(&global_state.clone()).await?;
+        resolve_system_applications(&global_state.clone()).await?;
         populate_initial_state_lock(&mut app_state).await?;
     }
 
@@ -94,35 +94,41 @@ async fn main() -> Result<(), ErrorArrayItem> {
         }
     });
 
+    // Network Monitor cleaning
+    tokio::spawn(async move {
+        let mut interval = tokio::time::interval(std::time::Duration::from_secs(30));
+    
+        loop {
+            interval.tick().await;
+    
+            if let Err(e) = global_state.network_monitor.cleanup_dead_pids().await {
+                log!(LogLevel::Error, "Failed to clean up dead PIDs: {}", e.err_mesg);
+            }
+        }
+    });
+
     tokio::spawn(async move {
         loop {
-            let mut app_state: AppState = match global_state.get_state_clone().await {
-                Ok(state) => state,
-                Err(err) => {
-                    log!(LogLevel::Error, "Failed to get state data skipping periodics: {}", err.err_mesg);
-                    continue;
-                },
-            };
 
-            if let Err(err) = handle_new_system_applications().await {
+            if let Err(err) = handle_new_system_applications(&global_state.clone()).await {
                 log!(LogLevel::Error, "{}", err);
             };
             sleep(Duration::from_millis(150)).await;
 
-            if let Err(err) = handle_new_client_applications(&mut app_state).await {
+            if let Err(err) = handle_new_client_applications(&global_state.clone()).await {
                 log!(LogLevel::Error, "{}", err);
             };
             sleep(Duration::from_millis(150)).await;
 
             if let Err(err) =
-                monitor_application_resource_usage(SYSTEM_APPLICATION_HANDLER.clone()).await
+                monitor_application_resource_usage(SYSTEM_APPLICATION_HANDLER.clone(), &global_state.clone()).await
             {
                 log!(LogLevel::Error, "{}", err);
             };
             sleep(Duration::from_millis(150)).await;
 
             if let Err(err) =
-                monitor_application_resource_usage(CLIENT_APPLICATION_HANDLER.clone()).await
+                monitor_application_resource_usage(CLIENT_APPLICATION_HANDLER.clone(), &global_state.clone()).await
             {
                 log!(LogLevel::Error, "{}", err);
             };
@@ -133,12 +139,12 @@ async fn main() -> Result<(), ErrorArrayItem> {
             }
             sleep(Duration::from_millis(150)).await;
 
-            if let Err(err) = update_client_state(&mut app_state).await {
+            if let Err(err) = update_client_state(&global_state.clone()).await {
                 log!(LogLevel::Error, "{}", err);
             }
             sleep(Duration::from_millis(150)).await;
 
-            if let Err(err) = update_system_state().await {
+            if let Err(err) = update_system_state(&global_state.clone()).await {
                 log!(LogLevel::Error, "{}", err);
             }
             sleep(Duration::from_millis(150)).await;

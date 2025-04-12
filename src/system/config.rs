@@ -1,4 +1,5 @@
 use artisan_middleware::dusa_collection_utils::{
+    errors::ErrorArrayItem,
     log,
     logger::{set_log_level, LogLevel},
     version::{SoftwareVersion, Version, VersionCode},
@@ -32,7 +33,7 @@ pub fn get_config() -> AppConfig {
     }
 }
 
-pub async fn generate_state(config: &AppConfig) -> AppState {
+pub async fn generate_state(config: &AppConfig) -> Result<AppState, ErrorArrayItem> {
     let state_path: PathType = get_state_path(&config);
 
     match StatePersistence::load_state(&state_path).await {
@@ -64,8 +65,8 @@ pub async fn generate_state(config: &AppConfig) -> AppState {
                 set_log_level(LogLevel::Debug);
             }
             loaded_data.error_log.clear();
-            save_state(&mut loaded_data, &state_path).await;
-            loaded_data
+            save_state(&mut loaded_data, &state_path).await?;
+            Ok(loaded_data)
         }
         Err(e) => {
             log!(LogLevel::Warn, "No previous state loaded, creating new one");
@@ -104,8 +105,8 @@ pub async fn generate_state(config: &AppConfig) -> AppState {
                 set_log_level(LogLevel::Debug);
             }
             state.error_log.clear();
-            save_state(&mut state, &state_path).await;
-            state
+            save_state(&mut state, &state_path).await?;
+            Ok(state)
         }
     }
 }

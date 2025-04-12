@@ -33,9 +33,10 @@ pub async fn monitor_application_resource_usage(
     // Define an inner asynchronous function (note: use fn, not closure)
     async fn update_usage(
         name: &Stringy,
-        pid: String,
+        pid: u32,
         monitor: &ResourceMonitorLock,
         app_status_array_write_lock: &mut HashMap<Stringy, AppStatus>,
+        gs: &Arc<GlobalState>
     ) -> Result<(), ErrorArrayItem> {
         match monitor.0.try_write_with_timeout(None).await {
             Ok(mut monitor_lock) => {
@@ -49,6 +50,9 @@ pub async fn monitor_application_resource_usage(
                 );
                 monitor_lock.cpu = usage.0;
                 monitor_lock.ram = usage.1;
+                
+                let net_usage = gs.network_monitor.view_bandwidth(pid).await?;
+                log!(LogLevel::Info, "{} -> Sent: {} : RECV: {}", pid, net_usage.0, net_usage.1);
 
                 if let Some(app_status) = app_status_array_write_lock.get_mut(name) {
                     app_status.metrics = Some(Metrics {
@@ -75,9 +79,10 @@ pub async fn monitor_application_resource_usage(
                 let pid = child.get_pid().await?;
                 if let Err(err) = update_usage(
                     name,
-                    pid.to_string(),
+                    pid,
                     &child.monitor,
                     &mut app_status_array_write_lock,
+                    &gs.clone()
                 )
                 .await
                 {
@@ -93,12 +98,13 @@ pub async fn monitor_application_resource_usage(
                 if !process.active() {
                     continue;
                 }
-                let pid = process.get_pid();
+                let pid = process.get_pid() as u32;
                 if let Err(err) = update_usage(
                     name,
-                    pid.to_string(),
+                    pid,
                     &process.monitor,
                     &mut app_status_array_write_lock,
+                    &gs.clone()
                 )
                 .await
                 {
@@ -222,9 +228,9 @@ pub async fn handle_dead_applications() -> Result<(), ErrorArrayItem> {
     Ok(())
 }
 
-pub async fn handle_new_system_applications() -> Result<(), ErrorArrayItem> {
+pub async fn handle_new_system_applications(gs: &Arc<GlobalState>) -> Result<(), ErrorArrayItem> {
     // resolve current applications
-    resolve_system_applications().await?;
+    resolve_system_applications(gs).await?;
 
     let mut system_handler_write_lock: tokio::sync::RwLockWriteGuard<
         '_,
@@ -452,9 +458,9 @@ pub async fn update_client_state(gs: &Arc<GlobalState>) -> Result<(), ErrorArray
     Ok(())
 }
 
-pub async fn update_system_state() -> Result<(), ErrorArrayItem> {
+pub async fn update_system_state(gs: &Arc<GlobalState>) -> Result<(), ErrorArrayItem> {
     // Updating state files for system applications
-    resolve_system_applications().await?;
+    resolve_system_applications(gs).await?;
 
     let mut application_status_array_write_lock: tokio::sync::RwLockWriteGuard<
         '_,

@@ -11,6 +11,7 @@ use artisan_middleware::dusa_collection_utils::types::rwarc::LockWithTimeout;
 use artisan_middleware::state_persistence::AppState;
 use artisan_middleware::{control::ToggleControl, dusa_collection_utils::errors::ErrorArrayItem};
 use artisan_middleware::{dusa_collection_utils::log, identity::Identifier};
+use tokio::net::TcpStream;
 use tokio::sync::{Notify, OnceCell};
 
 use super::config::{generate_state, get_config};
@@ -38,7 +39,19 @@ impl GlobalState {
 
         let app_state_data: (Arc<RwLock<AppState>>, PathType) = {
             let config: AppConfig = get_config();
-            let state: AppState = generate_state(&config).await;
+            let state: AppState = match generate_state(&config).await {
+                Ok(state) => state,
+                Err(err) => {
+                    log!(
+                        LogLevel::Error,
+                        "Failed to save state off rip. Let's try that again: {}",
+                        err.err_mesg
+                    );
+                    signals.signal_shutdown();
+                    tokio::time::sleep(Duration::from_millis(300)).await;
+                    unreachable!("Failed to shutdown application. State file failed to load");
+                },
+            };
             let state_path: PathType = get_state_path(&config);
 
             let wrapped_app_state = Arc::new(RwLock::new(state));
@@ -87,15 +100,16 @@ impl GlobalState {
     }
 
     pub async fn get_state_clone(&self) -> Result<AppState, ErrorArrayItem> {
-        Ok(self.app_state
-        .try_read()
-        .map_err(|_| {
-            ErrorArrayItem::new(
-                Errors::AppState,
-                "Failed to get the app state from the global state",
-            )
-        })?
-        .clone())
+        Ok(self
+            .app_state
+            .try_read()
+            .map_err(|_| {
+                ErrorArrayItem::new(
+                    Errors::AppState,
+                    "Failed to get the app state from the global state",
+                )
+            })?
+            .clone())
     }
 }
 
@@ -166,8 +180,15 @@ impl PortalIntance {
     pub fn new(address: PortalAddr) -> PortalIntance {
         PortalIntance {
             address,
-            intime: true,
+            intime: false,
         }
+    }
+
+    /// Attepmts to conntect to a given portal instance returning a [`tokio::net::TcpStream`] on success
+    pub async fn connect(&self) -> Result<TcpStream, ErrorArrayItem> {
+        TcpStream::connect(format!("{}:{}", self.address.addr, self.address.port))
+            .await
+            .map_err(ErrorArrayItem::from)
     }
 
     /// Sets a given instance as 'intime' meaning it's  requesting and getting data
@@ -178,6 +199,10 @@ impl PortalIntance {
     /// Sets a given instance as 'outtime' meaning we've found it but it may be unhealthy
     pub fn out_time(&mut self) {
         self.intime = false
+    }
+
+    pub fn get_address(&self) -> PortalAddr {
+        self.address.clone()
     }
 
     //  validates the identity of a given portal
@@ -218,7 +243,24 @@ impl PortalState {
         Ok(write_guard.remove(&address))
     }
 
-    pub async fn intime(&self, address: PortalAddr, intime: bool) -> Result<(), ErrorArrayItem> {
+    pub async fn contains(&self, address: PortalAddr) -> Result<bool, ErrorArrayItem> {
+        let read_guard: tokio::sync::RwLockReadGuard<'_, HashMap<PortalAddr, PortalIntance>> =
+            self.lock.try_read().await?;
+        Ok(read_guard.contains_key(&address))
+    }
+
+    pub async fn get_time(&self, address: PortalAddr) -> Result<bool, ErrorArrayItem> {
+        let read_guard: tokio::sync::RwLockReadGuard<'_, HashMap<PortalAddr, PortalIntance>> =
+            self.lock.try_read().await?;
+
+        if let Some(portal) = read_guard.get(&address) {
+            Ok(portal.intime)
+        } else {
+            Ok(false)
+        }
+    }
+
+    pub async fn set_time(&self, address: PortalAddr, intime: bool) -> Result<(), ErrorArrayItem> {
         let mut write_guard: tokio::sync::RwLockWriteGuard<'_, HashMap<PortalAddr, PortalIntance>> =
             self.lock.try_write().await?;
 

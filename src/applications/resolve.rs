@@ -1,4 +1,4 @@
-use artisan_middleware::config::AppConfig;
+use artisan_middleware::aggregator::Status;
 use artisan_middleware::config_bundle::ApplicationConfig;
 use artisan_middleware::dusa_collection_utils::errors::{ErrorArrayItem, Errors};
 use artisan_middleware::dusa_collection_utils::log;
@@ -9,13 +9,17 @@ use artisan_middleware::enviornment::definitions::Enviornment;
 use artisan_middleware::git_actions::GitCredentials;
 use artisan_middleware::state_persistence::{AppState, StatePersistence};
 use serde::{Deserialize, Serialize};
+use std::sync::Arc;
 use std::{fmt, fs};
 use tokio::task;
+
+use crate::system::control::GlobalState;
 
 use super::child::{CLIENT_APPLICATION_ARRAY, SYSTEM_APPLICATION_ARRAY};
 
 // pub static SYSTEMAPPLICATIONS: [&'static str; 4] = ["gitmon", "ids", "self", "messenger"];
 pub static SYSTEMAPPLICATIONS: [&'static str; 3] = ["gitmon", "self", "mailler"];
+pub static SYSTEMAPPLICATIONSIGNORE: [&'static str; 1] = ["ais_welcome"];
 
 #[derive(Debug, Serialize, Deserialize)]
 pub enum Applications {
@@ -64,7 +68,7 @@ impl fmt::Display for ClientApplication {
 }
 
 #[allow(unused_assignments)]
-pub async fn resolve_system_applications() -> Result<(), ErrorArrayItem> {
+pub async fn resolve_system_applications(gs: &Arc<GlobalState>) -> Result<(), ErrorArrayItem> {
     let system_application_names: Vec<Stringy> = SYSTEMAPPLICATIONS
         .iter()
         .map(|app_name| {
@@ -74,6 +78,7 @@ pub async fn resolve_system_applications() -> Result<(), ErrorArrayItem> {
                 format!("ais_{}", app_name).into()
             }
         })
+        .filter(|name: &Stringy| !SYSTEMAPPLICATIONSIGNORE.contains(&name.as_str()))
         .collect();
 
     // assemble the Struct from the array
@@ -81,6 +86,7 @@ pub async fn resolve_system_applications() -> Result<(), ErrorArrayItem> {
 
     for name in system_application_names {
         let name = name.clone();
+        log!(LogLevel::Debug, "Resolving system app: {}", name);
         tasks.push(task::spawn(async move {
             let application_path = PathType::Content(format!("/opt/artisan/bin/{}", name));
             let application_state_path = PathType::Content(format!("/tmp/.{}.state", name));
@@ -100,7 +106,8 @@ pub async fn resolve_system_applications() -> Result<(), ErrorArrayItem> {
                 Err(err) => {
                     log!(
                         LogLevel::Error,
-                        "Couldn't load system app state data: {}",
+                        "Couldn't load system app: {} state data: {}",
+                        name,
                         err
                     );
                     return Err(());
@@ -148,6 +155,22 @@ pub async fn resolve_system_applications() -> Result<(), ErrorArrayItem> {
     > = SYSTEM_APPLICATION_ARRAY.try_write().await?;
 
     for app in results {
+        if app.config.get_status() == Status::Running
+            || app.config.get_status() == Status::Building
+            || app.config.get_status() == Status::Idle
+            || app.config.get_status() == Status::Starting
+        {
+            let pid = app.config.get_pid();
+            if let Err(err) = gs.network_monitor.track_pid(pid).await {
+                log!(
+                    LogLevel::Error,
+                    "Failed to start tracking: {} -> {}",
+                    pid,
+                    err.err_mesg
+                );
+            }
+        }
+
         system_application_array_write_lock.insert(app.clone().name, app);
     }
 
@@ -155,7 +178,9 @@ pub async fn resolve_system_applications() -> Result<(), ErrorArrayItem> {
 }
 
 #[allow(unused_assignments)]
-pub async fn resolve_client_applications(config: &AppConfig) -> Result<(), ErrorArrayItem> {
+pub async fn resolve_client_applications(gs: &Arc<GlobalState>) -> Result<(), ErrorArrayItem> {
+    let app_state: AppState = gs.get_state_clone().await?;
+
     let mut application_list: Vec<String> = Vec::new();
 
     let dir_read: fs::ReadDir = match fs::read_dir("/opt/artisan/bin") {
@@ -202,7 +227,7 @@ pub async fn resolve_client_applications(config: &AppConfig) -> Result<(), Error
     }
 
     // Pasring the git configuration
-    let git_credential_file_string = match &config.git {
+    let git_credential_file_string = match &app_state.config.git {
         Some(config) => config.credentials_file.clone(),
         None => {
             log!(LogLevel::Error, "FAILED TO PASRE CLIENT APPLICATIONS !!!");
@@ -323,6 +348,22 @@ pub async fn resolve_client_applications(config: &AppConfig) -> Result<(), Error
     > = CLIENT_APPLICATION_ARRAY.try_write().await?;
 
     for app in results {
+        if app.config.get_status() == Status::Running
+            || app.config.get_status() == Status::Building
+            || app.config.get_status() == Status::Idle
+            || app.config.get_status() == Status::Starting
+        {
+            let pid = app.config.get_pid();
+            if let Err(err) = gs.network_monitor.track_pid(pid).await {
+                log!(
+                    LogLevel::Error,
+                    "Failed to start tracking: {} -> {}",
+                    pid,
+                    err.err_mesg
+                );
+            }
+        }
+
         client_application_array_write_lock.insert(app.clone().name, app);
     }
 

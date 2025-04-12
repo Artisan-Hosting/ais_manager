@@ -4,12 +4,15 @@ use std::time::Duration;
 use artisan_middleware::aggregator::{save_registered_apps, AppStatus};
 use artisan_middleware::dusa_collection_utils::log;
 use artisan_middleware::dusa_collection_utils::logger::LogLevel;
+use artisan_middleware::dusa_collection_utils::types::pathtype::PathType;
+use artisan_middleware::state_persistence::AppState;
 use tokio::signal::unix::SignalKind;
 
 use crate::applications::child::{
     APP_STATUS_ARRAY, CLIENT_APPLICATION_HANDLER, SYSTEM_APPLICATION_HANDLER,
 };
 use crate::applications::resolve::{resolve_client_applications, resolve_system_applications};
+use crate::system::state::wind_down_state;
 
 use super::control::GlobalState;
 
@@ -57,7 +60,7 @@ pub async fn reload_callback(gs: &Arc<GlobalState>) {
         log!(LogLevel::Error, "{}", err);
     }
 
-    if let Err(err) = resolve_system_applications().await {
+    if let Err(err) = resolve_system_applications(&gs.clone()).await {
         log!(LogLevel::Error, "{}", err);
     }
 
@@ -111,6 +114,11 @@ pub async fn shutdown_callback(gs: &Arc<GlobalState>) {
         log!(LogLevel::Error, "{}", err);
         std::process::exit(1)
     }
+
+    let mut app_state: AppState = gs.get_state_clone().await.unwrap();
+    let app_state_path: &PathType = &gs.app_state_path;
+
+    wind_down_state(&mut app_state, app_state_path).await.unwrap();
 
     log!(LogLevel::Info, "Bye~");
     std::process::exit(0)

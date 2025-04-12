@@ -114,7 +114,7 @@ pub async fn _spawn_system_applications(
                             system_app.0, config_path
                         );
                         state.event_counter += 1;
-                        save_state(state, state_path).await;
+                        save_state(state, state_path).await?;
                         child
                     }
                     Err(err) => {
@@ -145,7 +145,7 @@ pub async fn _spawn_system_applications(
 
     state.data = format!("All system applications spawned");
     state.event_counter += 1;
-    save_state(state, state_path).await;
+    save_state(state, state_path).await?;
 
     Ok(())
 }
@@ -287,7 +287,7 @@ pub async fn _spawn_client_applications(
 
     state.data = format!("All client applications spawned");
     state.event_counter += 1;
-    save_state(state, state_path).await;
+    save_state(state, state_path).await?;
 
     Ok(())
 }
