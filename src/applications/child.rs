@@ -639,7 +639,7 @@ pub async fn populate_initial_state_lock(state: &mut AppState) -> Result<(), Err
 }
 
 pub fn pids_in_cgroup(service_name: &str) -> std::io::Result<Vec<u32>> {
-    let path = format!("/sys/fs/cgroup/system.slice/{}.service/cgroup.procs", service_name);
+    let path = format!("/sys/fs/cgroup/artisan.slice/{}.service/cgroup.procs", service_name);
     let file = fs::File::open(path)?;
     let reader = BufReader::new(file);
 
