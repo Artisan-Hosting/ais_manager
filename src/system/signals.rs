@@ -12,6 +12,7 @@ use crate::applications::child::{
     APP_STATUS_ARRAY, CLIENT_APPLICATION_HANDLER, SYSTEM_APPLICATION_HANDLER,
 };
 use crate::applications::resolve::{resolve_client_applications, resolve_system_applications};
+use crate::system::control::LEDGER_PATH;
 use crate::system::state::wind_down_state;
 
 use super::control::GlobalState;
@@ -108,6 +109,10 @@ pub async fn shutdown_callback(gs: &Arc<GlobalState>) {
 
     for app in app_array.clone() {
         log!(LogLevel::Debug, "Status: {}", app);
+    }
+
+    if let Err(e) = gs.ledger.try_read().await.unwrap().persist_to_disk(LEDGER_PATH) {
+        log!(LogLevel::Error, "Failed to persist usage ledger: {}", e);
     }
 
     if let Err(err) = save_registered_apps(&app_array).await {

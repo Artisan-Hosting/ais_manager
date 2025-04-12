@@ -16,7 +16,7 @@ use artisan_middleware::{dusa_collection_utils::log, identity::Identifier};
 use network::process_tcp;
 use std::{collections::HashMap, sync::Arc, time::Duration};
 use system::{
-    control::{GlobalState, GLOBAL_STATE},
+    control::{GlobalState, GLOBAL_STATE, LEDGER_PATH},
     portal::connect_with_portal,
     signals::{handle_signal, reload_callback, shutdown_callback},
 };
@@ -94,29 +94,31 @@ async fn main() -> Result<(), ErrorArrayItem> {
         }
     });
 
-    // Network Monitor tracking 
+    // Network Monitor Maintenence
     tokio::spawn(async move {
-        let interval = tokio::time::interval(std::time::Duration::from_secs(5));
-        tokio::pin!(interval);
-    
-        loop {
-            interval.as_mut().tick().await;
-    
-            if let Err(err) = track_pids(&global_state.clone()).await {
-                log!(LogLevel::Error, "Failed to refresh cgroup PIDs: {}", err.err_mesg);
-            }
-        }
-    });
-
-    // Network Monitor cleaning
-    tokio::spawn(async move {
-        let mut interval = tokio::time::interval(std::time::Duration::from_secs(1));
+        let mut interval = tokio::time::interval(std::time::Duration::from_secs(5));
     
         loop {
             interval.tick().await;
     
             if let Err(e) = global_state.network_monitor.cleanup_dead_pids().await {
-                log!(LogLevel::Error, "Failed to clean up dead PIDs: {}", e.err_mesg);
+                log!(LogLevel::Warn, "Skipping clean up dead PIDs: {}", e.err_mesg);
+            }
+
+            if let Err(err) = track_pids(&global_state.clone()).await {
+                log!(LogLevel::Warn, "Skipping refresh cgroup PIDs: {}", err.err_mesg);
+            }
+        }
+    });
+
+    // Usage ledger fn
+    tokio::spawn(async move {
+        loop {
+            tokio::time::sleep(tokio::time::Duration::from_secs(30)).await;
+            if let Err(e) = global_state.ledger.try_read().await.unwrap().persist_to_disk(LEDGER_PATH) {
+                log!(LogLevel::Error, "Failed to persist usage ledger: {}", e);
+            } else {
+                log!(LogLevel::Trace, "Persisted usage ledger to disk");
             }
         }
     });
