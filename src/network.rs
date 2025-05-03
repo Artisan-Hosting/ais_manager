@@ -91,7 +91,7 @@ async fn command_processor(command: Command) -> Result<AppMessage, ErrorArrayIte
         log!(LogLevel::Error, "{}", err);
         return Ok(AppMessage::Response(CommandResponse {
             app_id: "".into(),
-            command_type: CommandType::Custom("Unknown".into()),
+            command_type: command.command_type,
             success: false,
             message: Some("Server not accepting requests".to_owned()),
         }));
@@ -121,12 +121,12 @@ async fn command_processor(command: Command) -> Result<AppMessage, ErrorArrayIte
         }
         artisan_middleware::aggregator::CommandType::Stop => {
             if app_id == "ais_manager".into() {
-                global_state.signals.signal_reload();
+                global_state.signals.signal_shutdown();
                 return Ok(AppMessage::Response(CommandResponse {
                     app_id,
                     command_type: CommandType::Restart,
                     success: true,
-                    message: Some("triggered reload !".to_owned()),
+                    message: Some("triggered manager shutdown !".to_owned()),
                 }));
             }
 

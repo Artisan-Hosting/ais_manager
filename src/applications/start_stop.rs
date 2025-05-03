@@ -17,59 +17,16 @@ use crate::applications::child::{
 
 
 pub async fn stop_application(app_id: &Stringy) -> Result<(), ErrorArrayItem> {
-    let mut app_status_array_write_lock: tokio::sync::RwLockWriteGuard<
+    let app_status_array_write_lock: tokio::sync::RwLockReadGuard<
         '_,
         std::collections::HashMap<Stringy, artisan_middleware::aggregator::AppStatus>,
-    > = APP_STATUS_ARRAY.try_write().await?;
+    > = APP_STATUS_ARRAY.try_read().await?;
 
-    let app_status = match app_status_array_write_lock.get_mut(&app_id) {
-        Some(app) => {
-            app.app_data.set_status(Status::Stopping);
-            Some(app)
-        }
-        None => None, // couldn't find
-    };
+    let app_status =  app_status_array_write_lock.get(&app_id);
 
     match app_status {
         Some(app) => {
-            // Determine if it's a system app
-            if app.app_data.is_system_application() {
-                let mut lock = SYSTEM_APPLICATION_HANDLER.try_write().await?;
-                log!(
-                    LogLevel::Trace,
-                    "{} Dropped from handler for termination",
-                    app.app_id
-                );
-
-                if let None = lock.remove(&app.app_data.get_name().into()) {
-                    log!(
-                        LogLevel::Warn,
-                        "The application wasn't registered with the handler: {}",
-                        app.app_id
-                    );
-                }
-            } else {
-                let mut lock = CLIENT_APPLICATION_HANDLER.try_write().await?;
-                log!(
-                    LogLevel::Trace,
-                    "{} Dropped from handler for termination",
-                    app.app_id
-                );
-
-                if let None = lock.remove(&app.app_data.get_name().into()) {
-                    log!(
-                        LogLevel::Warn,
-                        "The application wasn't registered with the handler: {}",
-                        app.app_id
-                    );
-                }
-            };
-
-            app.app_data.set_status(Status::Stopped);
-            app.metrics = None;
-            app.uptime = None;
             send_stop(&app)?;
-            // drop(app_status_array_write_lock);
             return Ok(());
         }
         None => {
