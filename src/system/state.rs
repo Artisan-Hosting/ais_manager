@@ -1,14 +1,14 @@
 use std::sync::Arc;
 
+use artisan_middleware::dusa_collection_utils::core::logger::LogLevel;
 use artisan_middleware::dusa_collection_utils::log;
-use artisan_middleware::dusa_collection_utils::logger::LogLevel;
 use artisan_middleware::dusa_collection_utils::{
-    errors::{ErrorArrayItem, Errors},
-    functions::current_timestamp,
+    core::errors::{ErrorArrayItem, Errors},
+    core::functions::current_timestamp,
 };
 use artisan_middleware::{
     config::AppConfig,
-    dusa_collection_utils::types::pathtype::PathType,
+    dusa_collection_utils::core::types::pathtype::PathType,
     state_persistence::{self, AppState, StatePersistence},
 };
 
@@ -47,7 +47,10 @@ pub async fn save_state(state: &mut AppState, path: &PathType) -> Result<(), Err
 }
 
 // Update the state file in the case of a un handled error
-pub async fn wind_down_state(state: &mut AppState, state_path: &PathType) -> Result<(), ErrorArrayItem> {
+pub async fn wind_down_state(
+    state: &mut AppState,
+    state_path: &PathType,
+) -> Result<(), ErrorArrayItem> {
     state.data = String::from("Terminated");
     state.last_updated = current_timestamp();
     state.error_log.push(ErrorArrayItem::new(

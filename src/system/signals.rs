@@ -2,9 +2,9 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use artisan_middleware::aggregator::{save_registered_apps, AppStatus};
+use artisan_middleware::dusa_collection_utils::core::logger::LogLevel;
+use artisan_middleware::dusa_collection_utils::core::types::pathtype::PathType;
 use artisan_middleware::dusa_collection_utils::log;
-use artisan_middleware::dusa_collection_utils::logger::LogLevel;
-use artisan_middleware::dusa_collection_utils::types::pathtype::PathType;
 use artisan_middleware::state_persistence::AppState;
 use tokio::signal::unix::SignalKind;
 
@@ -111,7 +111,13 @@ pub async fn shutdown_callback(gs: &Arc<GlobalState>) {
         log!(LogLevel::Debug, "Status: {}", app);
     }
 
-    if let Err(e) = gs.ledger.try_read().await.unwrap().persist_to_disk(LEDGER_PATH) {
+    if let Err(e) = gs
+        .ledger
+        .try_read()
+        .await
+        .unwrap()
+        .persist_to_disk(LEDGER_PATH)
+    {
         log!(LogLevel::Error, "Failed to persist usage ledger: {}", e);
     }
 
@@ -123,7 +129,9 @@ pub async fn shutdown_callback(gs: &Arc<GlobalState>) {
     let mut app_state: AppState = gs.get_state_clone().await.unwrap();
     let app_state_path: &PathType = &gs.app_state_path;
 
-    wind_down_state(&mut app_state, app_state_path).await.unwrap();
+    wind_down_state(&mut app_state, app_state_path)
+        .await
+        .unwrap();
 
     log!(LogLevel::Info, "Bye~");
     std::process::exit(0)

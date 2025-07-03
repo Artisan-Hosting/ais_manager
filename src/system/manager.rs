@@ -1,8 +1,8 @@
 use artisan_middleware::{
     dusa_collection_utils::{
-        errors::{ErrorArrayItem, Errors},
-        functions::current_timestamp,
-        types::pathtype::PathType,
+        core::errors::{ErrorArrayItem, Errors},
+        core::functions::current_timestamp,
+        core::types::pathtype::PathType,
     },
     git_actions::{GitAuth, GitCredentials},
     portal::ManagerData,

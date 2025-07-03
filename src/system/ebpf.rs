@@ -1,7 +1,7 @@
 use artisan_middleware::aggregator::NetworkUsage;
-use artisan_middleware::dusa_collection_utils::errors::{ErrorArrayItem, Errors};
+use artisan_middleware::dusa_collection_utils::core::errors::{ErrorArrayItem, Errors};
+use artisan_middleware::dusa_collection_utils::core::logger::LogLevel;
 use artisan_middleware::dusa_collection_utils::log;
-use artisan_middleware::dusa_collection_utils::logger::LogLevel;
 use artisan_middleware::process_manager::is_pid_active;
 use aya::programs::Program;
 use aya::{include_bytes_aligned, programs::KProbe, Bpf};

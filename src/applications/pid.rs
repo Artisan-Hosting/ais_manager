@@ -1,6 +1,6 @@
-use artisan_middleware::dusa_collection_utils::errors::ErrorArrayItem;
+use artisan_middleware::dusa_collection_utils::core::errors::ErrorArrayItem;
+use artisan_middleware::dusa_collection_utils::core::logger::LogLevel;
 use artisan_middleware::dusa_collection_utils::log;
-use artisan_middleware::dusa_collection_utils::logger::LogLevel;
 use artisan_middleware::process_manager::SupervisedProcess;
 use nix::unistd::Pid;
 

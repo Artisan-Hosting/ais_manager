@@ -9,7 +9,14 @@ fn main() {
         println!("cargo:warning=vmlinux.h not found, generating...");
         if which::which("bpftool").is_ok() {
             let status = Command::new("bpftool")
-                .args(&["btf", "dump", "file", "/sys/kernel/btf/vmlinux", "format", "c"])
+                .args(&[
+                    "btf",
+                    "dump",
+                    "file",
+                    "/sys/kernel/btf/vmlinux",
+                    "format",
+                    "c",
+                ])
                 .output()
                 .expect("failed to run bpftool");
 
@@ -17,7 +24,10 @@ fn main() {
                 fs::write(vmlinux_path, status.stdout).expect("failed to write vmlinux.h");
                 println!("cargo:warning=vmlinux.h generated successfully");
             } else {
-                panic!("bpftool failed: {}", String::from_utf8_lossy(&status.stderr));
+                panic!(
+                    "bpftool failed: {}",
+                    String::from_utf8_lossy(&status.stderr)
+                );
             }
         } else {
             panic!("bpftool not found. Please install it to generate vmlinux.h");
@@ -27,12 +37,17 @@ fn main() {
     // Build eBPF C program
     let status = Command::new("clang")
         .args(&[
-            "-O2", "-g",
-            "-target", "bpf",
+            "-O2",
+            "-g",
+            "-target",
+            "bpf",
             "-D__TARGET_ARCH_x86",
-            "-I", "src/ebpf",
-            "-c", "src/ebpf/network.c",
-            "-o", "src/ebpf/network.o",
+            "-I",
+            "src/ebpf",
+            "-c",
+            "src/ebpf/network.c",
+            "-o",
+            "src/ebpf/network.o",
             "-Wall",
             "-Wno-unused",
             "-Wno-unused-function",

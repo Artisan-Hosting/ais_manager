@@ -1,8 +1,8 @@
-use artisan_middleware::dusa_collection_utils::errors::Errors;
-use artisan_middleware::dusa_collection_utils::{errors::ErrorArrayItem, log};
+use artisan_middleware::dusa_collection_utils::core::errors::Errors;
+use artisan_middleware::dusa_collection_utils::{core::errors::ErrorArrayItem, log};
 use artisan_middleware::{
     aggregator::{AppMessage, Command, CommandResponse, CommandType},
-    dusa_collection_utils::{logger::LogLevel, types::stringy::Stringy},
+    dusa_collection_utils::{core::logger::LogLevel, core::types::stringy::Stringy},
     portal::ManagerData,
     state_persistence::AppState,
 };

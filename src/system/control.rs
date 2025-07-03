@@ -4,13 +4,15 @@ use std::sync::RwLock;
 use std::{sync::Arc, time::Duration};
 
 use artisan_middleware::config::AppConfig;
-use artisan_middleware::dusa_collection_utils::errors::Errors;
-use artisan_middleware::dusa_collection_utils::logger::LogLevel;
-use artisan_middleware::dusa_collection_utils::types::pathtype::PathType;
-use artisan_middleware::dusa_collection_utils::types::rwarc::LockWithTimeout;
+use artisan_middleware::dusa_collection_utils::core::errors::Errors;
+use artisan_middleware::dusa_collection_utils::core::logger::LogLevel;
+use artisan_middleware::dusa_collection_utils::core::types::pathtype::PathType;
+use artisan_middleware::dusa_collection_utils::core::types::rwarc::LockWithTimeout;
 use artisan_middleware::historics::UsageLedger;
 use artisan_middleware::state_persistence::AppState;
-use artisan_middleware::{control::ToggleControl, dusa_collection_utils::errors::ErrorArrayItem};
+use artisan_middleware::{
+    control::ToggleControl, dusa_collection_utils::core::errors::ErrorArrayItem,
+};
 use artisan_middleware::{dusa_collection_utils::log, identity::Identifier};
 use tokio::net::TcpStream;
 use tokio::sync::{Notify, OnceCell};
@@ -40,7 +42,8 @@ impl GlobalState {
         let locks: Arc<Locks> = Arc::new(Locks::new());
         let portal_state: PortalState = PortalState::new()?;
         let network_monitor: Arc<BandwidthTracker> = Arc::new(BandwidthTracker::new().await?);
-        let ledger: UsageLedger = UsageLedger::load_from_disk(LEDGER_PATH).unwrap_or_else(|_| UsageLedger::new());
+        let ledger: UsageLedger =
+            UsageLedger::load_from_disk(LEDGER_PATH).unwrap_or_else(|_| UsageLedger::new());
 
         let app_state_data: (Arc<RwLock<AppState>>, PathType) = {
             let config: AppConfig = get_config();
@@ -55,7 +58,7 @@ impl GlobalState {
                     signals.signal_shutdown();
                     tokio::time::sleep(Duration::from_millis(300)).await;
                     unreachable!("Failed to shutdown application. State file failed to load");
-                },
+                }
             };
             let state_path: PathType = get_state_path(&config);
 

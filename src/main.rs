@@ -7,9 +7,9 @@ use applications::{
     resolve::{resolve_client_applications, resolve_system_applications, track_pids},
 };
 use artisan_middleware::dusa_collection_utils::{
-    errors::ErrorArrayItem,
-    logger::LogLevel,
-    types::{rwarc::LockWithTimeout, stringy::Stringy},
+    core::errors::ErrorArrayItem,
+    core::logger::LogLevel,
+    core::types::{rwarc::LockWithTimeout, stringy::Stringy},
 };
 use artisan_middleware::{aggregator::AppStatus, state_persistence::AppState};
 use artisan_middleware::{dusa_collection_utils::log, identity::Identifier};
@@ -97,16 +97,24 @@ async fn main() -> Result<(), ErrorArrayItem> {
     // Network Monitor Maintenence
     tokio::spawn(async move {
         let mut interval = tokio::time::interval(std::time::Duration::from_secs(5));
-    
+
         loop {
             interval.tick().await;
-    
+
             if let Err(e) = global_state.network_monitor.cleanup_dead_pids().await {
-                log!(LogLevel::Warn, "Skipping clean up dead PIDs: {}", e.err_mesg);
+                log!(
+                    LogLevel::Warn,
+                    "Skipping clean up dead PIDs: {}",
+                    e.err_mesg
+                );
             }
 
             if let Err(err) = track_pids(&global_state.clone()).await {
-                log!(LogLevel::Warn, "Skipping refresh cgroup PIDs: {}", err.err_mesg);
+                log!(
+                    LogLevel::Warn,
+                    "Skipping refresh cgroup PIDs: {}",
+                    err.err_mesg
+                );
             }
         }
     });
@@ -115,7 +123,13 @@ async fn main() -> Result<(), ErrorArrayItem> {
     tokio::spawn(async move {
         loop {
             tokio::time::sleep(tokio::time::Duration::from_secs(30)).await;
-            if let Err(e) = global_state.ledger.try_read().await.unwrap().persist_to_disk(LEDGER_PATH) {
+            if let Err(e) = global_state
+                .ledger
+                .try_read()
+                .await
+                .unwrap()
+                .persist_to_disk(LEDGER_PATH)
+            {
                 log!(LogLevel::Error, "Failed to persist usage ledger: {}", e);
             } else {
                 log!(LogLevel::Trace, "Persisted usage ledger to disk");
@@ -125,7 +139,6 @@ async fn main() -> Result<(), ErrorArrayItem> {
 
     tokio::spawn(async move {
         loop {
-
             if let Err(err) = handle_new_system_applications(&global_state.clone()).await {
                 log!(LogLevel::Error, "{}", err);
             };
@@ -136,15 +149,21 @@ async fn main() -> Result<(), ErrorArrayItem> {
             };
             sleep(Duration::from_millis(150)).await;
 
-            if let Err(err) =
-                monitor_application_resource_usage(SYSTEM_APPLICATION_HANDLER.clone(), &global_state.clone()).await
+            if let Err(err) = monitor_application_resource_usage(
+                SYSTEM_APPLICATION_HANDLER.clone(),
+                &global_state.clone(),
+            )
+            .await
             {
                 log!(LogLevel::Error, "{}", err);
             };
             sleep(Duration::from_millis(150)).await;
 
-            if let Err(err) =
-                monitor_application_resource_usage(CLIENT_APPLICATION_HANDLER.clone(), &global_state.clone()).await
+            if let Err(err) = monitor_application_resource_usage(
+                CLIENT_APPLICATION_HANDLER.clone(),
+                &global_state.clone(),
+            )
+            .await
             {
                 log!(LogLevel::Error, "{}", err);
             };
@@ -177,10 +196,10 @@ async fn main() -> Result<(), ErrorArrayItem> {
                     if let Err(err) = connect_with_portal(&mut state).await {
                         log!(LogLevel::Error, "Failed to connect with portal: {}", err);
                     }
-                },
+                }
                 Err(err) => {
                     log!(LogLevel::Error, "Failed to get state: {}", err);
-                },
+                }
             }
 
             sleep(Duration::from_secs(30)).await;
