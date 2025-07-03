@@ -5,8 +5,8 @@ edition = "2021"
 build = "build.rs"
 
 [dependencies]
-#artisan_middleware = "5.3.1"
-artisan_middleware = {path = "/root/artisan_lib"}
+artisan_middleware = "5.4.0"
+#artisan_middleware = {path = "/opt/artisan/lib/artisan_lib"}
 colored = "3.0.0"
 gethostname = "1.0.0"
 glob = "0.3.1"

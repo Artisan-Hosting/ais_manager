@@ -143,18 +143,23 @@ dependencies = [
 
 [[package]]
 name = "artisan_middleware"
-version = "5.3.2"
+version = "5.4.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "b59f17e520cb00d798dcb807b36fc479df9aacc4a14b5119927e006435b427bc"
 dependencies = [
  "aes-gcm",
+ "base64 0.22.1",
+ "bytes 1.10.1",
  "chrono",
  "colored 2.2.0",
  "colorized",
  "config",
- "dusa_collection_utils 3.2.1",
+ "dusa_collection_utils 4.0.1",
  "gethostname 0.5.0",
  "hex",
  "lazy_static",
  "libc",
+ "lz4",
  "nix 0.29.0",
  "procfs 0.16.0",
  "rand",
@@ -673,6 +678,33 @@ name = "dusa_collection_utils"
 version = "3.2.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "30dba624f5b6b024f24260788325d6957ed1c5f003815cd277bb8242f0d88acf"
+dependencies = [
+ "block-modes",
+ "cfg_rust_features",
+ "colored 2.2.0",
+ "flate2",
+ "hex",
+ "lazy_static",
+ "nix 0.20.2",
+ "rand",
+ "regex",
+ "reqwest",
+ "rustversion",
+ "serde",
+ "serde_json",
+ "serde_yaml",
+ "sha2",
+ "tar",
+ "tempfile",
+ "tokio",
+ "walkdir",
+]
+
+[[package]]
+name = "dusa_collection_utils"
+version = "4.0.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "791754b63b86c15a8a49d3a19adfc2631fbac45cd10713307b7b1c84826eef29"
 dependencies = [
  "block-modes",
  "cfg_rust_features",
@@ -1536,6 +1568,25 @@ dependencies = [
 ]
 
 [[package]]
+name = "lz4"
+version = "1.28.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "a20b523e860d03443e98350ceaac5e71c6ba89aea7d960769ec3ce37f4de5af4"
+dependencies = [
+ "lz4-sys",
+]
+
+[[package]]
+name = "lz4-sys"
+version = "1.11.1+lz4-1.10.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "6bd8c0d6c6ed0cd30b3652886bb8711dc4bb01d637a68105a3d5158039b418e6"
+dependencies = [
+ "cc",
+ "libc",
+]
+
+[[package]]
 name = "matches"
 version = "0.1.10"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -2079,14 +2130,14 @@ dependencies = [
 
 [[package]]
 name = "recs_lib"
-version = "3.1.3"
+version = "3.1.4"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "9b08966c3af0eaea8c5b309448b96cb6f89c832fc8f0c6303cb1ca48e8f6eaab"
+checksum = "7d97523e90c9b71d060fd27f5f8bc2386ebe07a47fc98a98776d95b1eed71c59"
 dependencies = [
  "aes 0.7.5",
  "base64 0.21.7",
  "block-modes",
- "dusa_collection_utils 3.2.1",
+ "dusa_collection_utils 4.0.1",
  "glob",
  "hex",
  "hmac",
@@ -2540,9 +2591,9 @@ dependencies = [
 
 [[package]]
 name = "simple_comms"
-version = "1.2.0"
+version = "1.2.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "e07c71d45b9439fac1fcde0f02e141d0ed4b589c16b702db5b7c50331b0a0de5"
+checksum = "8fdad0d7c5d795906379d1045756b1af13c49f0a10aefaf29a5869b33e0e2048"
 dependencies = [
  "aes-gcm",
  "bincode",
