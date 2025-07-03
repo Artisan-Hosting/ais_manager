@@ -21,7 +21,6 @@ simple_comms = "1.2.0"
 tokio = "1.41.1"
 procfs = "0.14"
 aya = { version = "0.12", features = ["async_tokio"] }
-#bytemuck = { version = "1.13.1", features = ["derive"] }
 bytemuck = { version = "1.17", features = ["derive"] }
 
 [build-dependencies]

@@ -1,3 +1,4 @@
+use artisan_middleware::aggregator::Status;
 use artisan_middleware::config::AppConfig;
 use artisan_middleware::config_bundle::ApplicationConfig;
 use artisan_middleware::dusa_collection_utils::errors::{ErrorArrayItem, Errors};
@@ -11,6 +12,8 @@ use artisan_middleware::state_persistence::{AppState, StatePersistence};
 use serde::{Deserialize, Serialize};
 use std::{fmt, fs};
 use tokio::task;
+
+use crate::system::control::Controls;
 
 use super::child::{CLIENT_APPLICATION_ARRAY, SYSTEM_APPLICATION_ARRAY};
 
@@ -323,6 +326,20 @@ pub async fn resolve_client_applications(config: &AppConfig) -> Result<(), Error
     > = CLIENT_APPLICATION_ARRAY.try_write().await?;
 
     for app in results {
+        // Check if the application is running and add the pid to the ebpf tracker
+        let controls = Controls::get_controls().await?;
+        if app.config.get_status() == Status::Running
+            || app.config.get_status() == Status::Building
+            || app.config.get_status() == Status::Idle
+            || app.config.get_status() == Status::Starting
+        {
+            let pid = app.config.get_pid();
+            if let Err(err) = controls.kernel_app.track_pid(pid).await {
+                log!(LogLevel::Error, "Failed to start tracking: {} -> {}", pid, err.err_mesg);
+            }
+        }
+
+        // add the in memory tracking
         client_application_array_write_lock.insert(app.clone().name, app);
     }
 

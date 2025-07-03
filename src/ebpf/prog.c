@@ -2,6 +2,42 @@
 #include <bpf/bpf_helpers.h>
 #include <bpf/bpf_core_read.h>
 
+#ifndef PT_REGS_PARM3
+#if defined(__TARGET_ARCH_x86)
+  // For x86_64, the 3rd parameter is in rdx.
+  #define PT_REGS_PARM3(ctx) ((ctx)->dx)
+#elif defined(__TARGET_ARCH_arm64)
+  // For arm64, parameters are in the regs array; parameter 3 is at index 2.
+  #define PT_REGS_PARM3(ctx) ((ctx)->regs[2])
+#else
+  #error Unsupported target architecture!
+#endif
+#endif
+
+#ifndef PT_REGS_PARM4
+#if defined(__TARGET_ARCH_x86)
+  // For x86_64, the 4th parameter is in rdx.
+  #define PT_REGS_PARM4(ctx) ((ctx)->dx)
+#elif defined(__TARGET_ARCH_arm64)
+  // For arm64, parameters are in the regs array; parameter 3 is at index 2.
+  #define PT_REGS_PARM4(ctx) ((ctx)->regs[3])
+#else
+  #error Unsupported target architecture!
+#endif
+#endif
+
+#ifndef PT_REGS_PARM2
+#if defined(__TARGET_ARCH_x86)
+  // For x86_64, the 2nd parameter is in rdx.
+  #define PT_REGS_PARM2(ctx) ((ctx)->dx)
+#elif defined(__TARGET_ARCH_arm64)
+  // For arm64, parameters are in the regs array; parameter 3 is at index 2.
+  #define PT_REGS_PARM2(ctx) ((ctx)->regs[1])
+#else
+  #error Unsupported target architecture!
+#endif
+#endif
+
 struct traffic_stats {
     __u64 rx_bytes;
     __u64 tx_bytes;
@@ -40,6 +76,7 @@ SEC("kprobe/tcp_sendmsg")
 int bpf_tcp_sendmsg(struct pt_regs *ctx) {
     __u32 pid = bpf_get_current_pid_tgid() >> 32;
     ssize_t size = PT_REGS_PARM3(ctx);
+    bpf_printk("tcp_sendmsg: pid=%d, size=%d\n", pid, size);
     update_stats(pid, size, true);
     return 0;
 }
@@ -49,6 +86,7 @@ SEC("kprobe/tcp_cleanup_rbuf")
 int bpf_tcp_recvmsg(struct pt_regs *ctx) {
     __u32 pid = bpf_get_current_pid_tgid() >> 32;
     int copied = PT_REGS_PARM2(ctx);
+    // bpf_printk("tcp_recvmsg: pid=%d, size=%d\n", pid, size);
     update_stats(pid, copied, false);
     return 0;
 }
@@ -58,6 +96,7 @@ SEC("kprobe/udp_sendmsg")
 int bpf_udp_sendmsg(struct pt_regs *ctx) {
     __u32 pid = bpf_get_current_pid_tgid() >> 32;
     ssize_t size = PT_REGS_PARM3(ctx);
+    bpf_printk("udp_sendmsg: pid=%d, size=%d\n", pid, size);
     update_stats(pid, size, true);
     return 0;
 }
@@ -67,6 +106,7 @@ SEC("kprobe/udp_recvmsg")
 int bpf_udp_recvmsg(struct pt_regs *ctx) {
     __u32 pid = bpf_get_current_pid_tgid() >> 32;
     int copied = PT_REGS_PARM4(ctx);
+    // bpf_printk("upp_recvmsg: pid=%d, size=%d\n", pid, size);
     update_stats(pid, copied, false);
     return 0;
 }
