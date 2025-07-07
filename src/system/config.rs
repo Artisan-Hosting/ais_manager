@@ -17,7 +17,7 @@ use crate::system::state::save_state;
 
 use super::state::get_state_path;
 
-const static VERSIONCODE: VersionCode = VersionCode::Patched;
+const VERSIONCODE: VersionCode = VersionCode::Patched;
 
 pub fn get_config() -> AppConfig {
     match artisan_middleware::config::AppConfig::new() {
