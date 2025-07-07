@@ -17,6 +17,8 @@ use crate::system::state::save_state;
 
 use super::state::get_state_path;
 
+const static VERSIONCODE: VersionCode = VersionCode::Patched;
+
 pub fn get_config() -> AppConfig {
     match artisan_middleware::config::AppConfig::new() {
         Ok(mut data_loaded) => {
@@ -51,7 +53,7 @@ pub async fn generate_state(config: &AppConfig) -> Result<AppState, ErrorArrayIt
             loaded_data.version = {
                 let library_version: Version = aml_version();
                 let software_version: Version =
-                    str_to_version(env!("CARGO_PKG_VERSION"), Some(VersionCode::Production));
+                    str_to_version(env!("CARGO_PKG_VERSION"), Some(VERSIONCODE));
 
                 SoftwareVersion {
                     application: software_version,
@@ -76,7 +78,7 @@ pub async fn generate_state(config: &AppConfig) -> Result<AppState, ErrorArrayIt
                 version: {
                     let library_version: Version = aml_version();
                     let software_version: Version =
-                        str_to_version(env!("CARGO_PKG_VERSION"), Some(VersionCode::Production));
+                        str_to_version(env!("CARGO_PKG_VERSION"), Some(VERSIONCODE));
 
                     SoftwareVersion {
                         application: software_version,

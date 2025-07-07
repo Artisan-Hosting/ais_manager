@@ -40,6 +40,20 @@ impl GlobalState {
     pub async fn initialize_global_state() -> Result<(), ErrorArrayItem> {
         let signals: Arc<Signals> = Arc::new(Signals::new());
         let locks: Arc<Locks> = Arc::new(Locks::new());
+        
+        let portal_state = {
+            let identity = match Identifier::load_from_file() {
+                Ok(id) => id,
+                Err(_) => {
+                    log!(LogLevel::Warn, "Creating new machine id");
+                    Identifier::new().await.unwrap()
+                }
+            };
+
+            identity.save_to_file()?;
+            PortalState::new()
+        }?;
+
         let portal_state: PortalState = PortalState::new()?;
         let network_monitor: Arc<BandwidthTracker> = Arc::new(BandwidthTracker::new().await?);
         let ledger: UsageLedger =

@@ -38,14 +38,7 @@ async fn main() -> Result<(), ErrorArrayItem> {
     if app_state.config.debug_mode {
         log!(LogLevel::Debug, "\n{}", app_state);
     }
-
-    {
-        if let Err(_) = Identifier::load_from_file() {
-            log!(LogLevel::Warn, "Creating new machine id");
-            let id = Identifier::new().await.unwrap();
-            id.save_to_file().unwrap();
-        }
-    }
+    
     {
         resolve_client_applications(&global_state.clone()).await?;
         resolve_system_applications(&global_state.clone()).await?;
