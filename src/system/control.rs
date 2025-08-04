@@ -41,18 +41,19 @@ impl GlobalState {
         let signals: Arc<Signals> = Arc::new(Signals::new());
         let locks: Arc<Locks> = Arc::new(Locks::new());
         
-        let portal_state = {
-            let identity = match Identifier::load_from_file() {
-                Ok(id) => id,
-                Err(_) => {
-                    log!(LogLevel::Warn, "Creating new machine id");
-                    Identifier::new().await.unwrap()
-                }
-            };
-
-            identity.save_to_file()?;
-            PortalState::new()
-        }?;
+        // load identity
+        'load_identity: {
+            if let Err(err) = Identifier::load_from_file() {
+                log!(LogLevel::Warn, "Failed to load machine id: {}. Creating....", err.err_mesg);
+                match Identifier::new().await {
+                    Ok(id) => id.save_to_file()?,
+                    Err(err) => {
+                        log!(LogLevel::Error, "Failed to create new machine id: {}.", err.err_mesg);
+                        break 'load_identity;
+                    },
+                }                    
+            }
+        }
 
         let portal_state: PortalState = PortalState::new()?;
         let network_monitor: Arc<BandwidthTracker> = Arc::new(BandwidthTracker::new().await?);
