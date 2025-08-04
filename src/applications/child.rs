@@ -552,6 +552,9 @@ pub async fn populate_initial_state_lock(state: &mut AppState) -> Result<(), Err
     let mut applications: Vec<Application> = Vec::new();
     let mut app_states: Vec<(Stringy, ApplicationConfig, bool)> = Vec::new();
 
+    application_status_array_write_lock.clear();
+    application_status_array_write_lock.shrink_to_fit();
+
     // working on the system applications
     {
         let system_application_array_read_lock = SYSTEM_APPLICATION_ARRAY.try_read().await?;

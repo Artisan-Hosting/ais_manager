@@ -65,6 +65,10 @@ pub async fn reload_callback(gs: &Arc<GlobalState>) {
         log!(LogLevel::Error, "{}", err);
     }
 
+    if let Err(err) = populate_initial_state_lock(&mut app_state).await {
+        log!(LogLevel::Error, "{}", err);
+    }
+
     log!(LogLevel::Info, "Reloaded!");
     gs.locks.resume_network().await;
 }
