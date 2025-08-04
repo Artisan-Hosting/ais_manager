@@ -9,7 +9,7 @@ use artisan_middleware::state_persistence::AppState;
 use tokio::signal::unix::SignalKind;
 
 use crate::applications::child::{
-    APP_STATUS_ARRAY, CLIENT_APPLICATION_HANDLER, SYSTEM_APPLICATION_HANDLER,
+    populate_initial_state_lock, APP_STATUS_ARRAY, CLIENT_APPLICATION_HANDLER, SYSTEM_APPLICATION_HANDLER
 };
 use crate::applications::resolve::{resolve_client_applications, resolve_system_applications};
 use crate::system::control::LEDGER_PATH;
@@ -65,8 +65,22 @@ pub async fn reload_callback(gs: &Arc<GlobalState>) {
         log!(LogLevel::Error, "{}", err);
     }
 
-    if let Err(err) = populate_initial_state_lock(&mut app_state).await {
-        log!(LogLevel::Error, "{}", err);
+    'new_state_lock: {
+        let gs: Arc<GlobalState> = gs.clone();
+        let mut state = match  gs.app_state.try_read() {
+            Ok(state) => {
+                state.clone()
+            },
+            Err(err) => {
+                log!(LogLevel::Warn, "Failed to re-initialize global state lock: {}. Skipping ...", err);
+                break 'new_state_lock;
+            },
+        };
+
+        if let Err(err) = populate_initial_state_lock(&mut state).await {
+            log!(LogLevel::Error, "Failed to re-initialize global state lock: {}. Skipping ...", err.err_mesg);
+            break 'new_state_lock;
+        }
     }
 
     log!(LogLevel::Info, "Reloaded!");
