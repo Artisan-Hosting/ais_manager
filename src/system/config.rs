@@ -1,13 +1,13 @@
 use artisan_middleware::dusa_collection_utils::{
-    errors::ErrorArrayItem,
+    core::errors::ErrorArrayItem,
+    core::logger::{set_log_level, LogLevel},
+    core::version::{SoftwareVersion, Version, VersionCode},
     log,
-    logger::{set_log_level, LogLevel},
-    version::{SoftwareVersion, Version, VersionCode},
 };
 use artisan_middleware::{
     aggregator::Status,
     config::AppConfig,
-    dusa_collection_utils::types::{pathtype::PathType, stringy::Stringy},
+    dusa_collection_utils::core::types::{pathtype::PathType, stringy::Stringy},
     state_persistence::{AppState, StatePersistence},
     timestamp::current_timestamp,
     version::{aml_version, str_to_version},
@@ -16,6 +16,8 @@ use artisan_middleware::{
 use crate::system::state::save_state;
 
 use super::state::get_state_path;
+
+const VERSIONCODE: VersionCode = VersionCode::Patched;
 
 pub fn get_config() -> AppConfig {
     match artisan_middleware::config::AppConfig::new() {
@@ -51,7 +53,7 @@ pub async fn generate_state(config: &AppConfig) -> Result<AppState, ErrorArrayIt
             loaded_data.version = {
                 let library_version: Version = aml_version();
                 let software_version: Version =
-                    str_to_version(env!("CARGO_PKG_VERSION"), Some(VersionCode::Production));
+                    str_to_version(env!("CARGO_PKG_VERSION"), Some(VERSIONCODE));
 
                 SoftwareVersion {
                     application: software_version,
@@ -76,7 +78,7 @@ pub async fn generate_state(config: &AppConfig) -> Result<AppState, ErrorArrayIt
                 version: {
                     let library_version: Version = aml_version();
                     let software_version: Version =
-                        str_to_version(env!("CARGO_PKG_VERSION"), Some(VersionCode::Production));
+                        str_to_version(env!("CARGO_PKG_VERSION"), Some(VERSIONCODE));
 
                     SoftwareVersion {
                         application: software_version,

@@ -6,21 +6,21 @@ use applications::{
     },
     resolve::{resolve_client_applications, resolve_system_applications, track_pids},
 };
+use artisan_middleware::dusa_collection_utils::log;
 use artisan_middleware::dusa_collection_utils::{
-    errors::ErrorArrayItem,
-    logger::LogLevel,
-    types::{rwarc::LockWithTimeout, stringy::Stringy},
+    core::errors::ErrorArrayItem,
+    core::logger::LogLevel,
+    core::types::{rwarc::LockWithTimeout, stringy::Stringy},
 };
 use artisan_middleware::{aggregator::AppStatus, state_persistence::AppState};
-use artisan_middleware::{dusa_collection_utils::log, identity::Identifier};
 use network::process_tcp;
 use std::{collections::HashMap, sync::Arc, time::Duration};
 use system::{
     control::{GlobalState, GLOBAL_STATE, LEDGER_PATH},
     portal::connect_with_portal,
-    signals::{handle_signal, reload_callback, shutdown_callback},
 };
 use tokio::{net::TcpListener, signal::unix::SignalKind, time::sleep};
+use crate::system::signals::{signal_handler, signal_listener};
 
 mod applications;
 mod network;
@@ -39,74 +39,54 @@ async fn main() -> Result<(), ErrorArrayItem> {
         log!(LogLevel::Debug, "\n{}", app_state);
     }
 
-    {
-        if let Err(_) = Identifier::load_from_file() {
-            log!(LogLevel::Warn, "Creating new machine id");
-            let id = Identifier::new().await.unwrap();
-            id.save_to_file().unwrap();
-        }
-    }
-    {
+    #[allow(unused_labels)]
+    'initial_application_lockers: {
         resolve_client_applications(&global_state.clone()).await?;
         resolve_system_applications(&global_state.clone()).await?;
         populate_initial_state_lock(&mut app_state).await?;
     }
 
-    // seting up signal listeners
-    tokio::spawn(async move {
-        if let Err(e) = handle_signal(
+    #[allow(unused_labels)]
+    'signal_setup: {
+        signal_listener(
             SignalKind::hangup(),
             || global_state.signals.signal_reload(),
             "SIGHUP",
         )
-        .await
-        {
-            log!(LogLevel::Error, "Error handling SIGHUP: {}", e);
-        }
-    });
+        .await;
 
-    tokio::spawn(async move {
-        if let Err(e) = handle_signal(
+        signal_listener(
             SignalKind::user_defined1(),
             || global_state.signals.signal_shutdown(),
             "SIGUSR1",
         )
-        .await
-        {
-            log!(LogLevel::Error, "Error handling SIGUSR1: {}", e);
-        }
-    });
+        .await;
+    
+        signal_handler(global_state.clone());
+    }
 
-    tokio::spawn(async move {
-        loop {
-            tokio::select! {
-                _ = global_state.signals.reload_notify.notified() => {
-                    reload_callback(&global_state).await;
-                }
-                _ = global_state.signals.shutdown_notify.notified() => {
-                    shutdown_callback(&global_state).await;
-                }
-                _ = tokio::signal::ctrl_c() => {
-                    log!(LogLevel::Info, "CTRL + C received");
-                    global_state.signals.signal_shutdown();
-                }
-            }
-        }
-    });
 
     // Network Monitor Maintenence
     tokio::spawn(async move {
         let mut interval = tokio::time::interval(std::time::Duration::from_secs(5));
-    
+
         loop {
             interval.tick().await;
-    
+
             if let Err(e) = global_state.network_monitor.cleanup_dead_pids().await {
-                log!(LogLevel::Warn, "Skipping clean up dead PIDs: {}", e.err_mesg);
+                log!(
+                    LogLevel::Warn,
+                    "Skipping clean up dead PIDs: {}",
+                    e.err_mesg
+                );
             }
 
             if let Err(err) = track_pids(&global_state.clone()).await {
-                log!(LogLevel::Warn, "Skipping refresh cgroup PIDs: {}", err.err_mesg);
+                log!(
+                    LogLevel::Warn,
+                    "Skipping refresh cgroup PIDs: {}",
+                    err.err_mesg
+                );
             }
         }
     });
@@ -115,7 +95,13 @@ async fn main() -> Result<(), ErrorArrayItem> {
     tokio::spawn(async move {
         loop {
             tokio::time::sleep(tokio::time::Duration::from_secs(30)).await;
-            if let Err(e) = global_state.ledger.try_read().await.unwrap().persist_to_disk(LEDGER_PATH) {
+            if let Err(e) = global_state
+                .ledger
+                .try_read()
+                .await
+                .unwrap()
+                .persist_to_disk(LEDGER_PATH)
+            {
                 log!(LogLevel::Error, "Failed to persist usage ledger: {}", e);
             } else {
                 log!(LogLevel::Trace, "Persisted usage ledger to disk");
@@ -125,7 +111,6 @@ async fn main() -> Result<(), ErrorArrayItem> {
 
     tokio::spawn(async move {
         loop {
-
             if let Err(err) = handle_new_system_applications(&global_state.clone()).await {
                 log!(LogLevel::Error, "{}", err);
             };
@@ -136,15 +121,21 @@ async fn main() -> Result<(), ErrorArrayItem> {
             };
             sleep(Duration::from_millis(150)).await;
 
-            if let Err(err) =
-                monitor_application_resource_usage(SYSTEM_APPLICATION_HANDLER.clone(), &global_state.clone()).await
+            if let Err(err) = monitor_application_resource_usage(
+                SYSTEM_APPLICATION_HANDLER.clone(),
+                &global_state.clone(),
+            )
+            .await
             {
                 log!(LogLevel::Error, "{}", err);
             };
             sleep(Duration::from_millis(150)).await;
 
-            if let Err(err) =
-                monitor_application_resource_usage(CLIENT_APPLICATION_HANDLER.clone(), &global_state.clone()).await
+            if let Err(err) = monitor_application_resource_usage(
+                CLIENT_APPLICATION_HANDLER.clone(),
+                &global_state.clone(),
+            )
+            .await
             {
                 log!(LogLevel::Error, "{}", err);
             };
@@ -177,10 +168,10 @@ async fn main() -> Result<(), ErrorArrayItem> {
                     if let Err(err) = connect_with_portal(&mut state).await {
                         log!(LogLevel::Error, "Failed to connect with portal: {}", err);
                     }
-                },
+                }
                 Err(err) => {
                     log!(LogLevel::Error, "Failed to get state: {}", err);
-                },
+                }
             }
 
             sleep(Duration::from_secs(30)).await;

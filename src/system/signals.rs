@@ -2,14 +2,14 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use artisan_middleware::aggregator::{save_registered_apps, AppStatus};
+use artisan_middleware::dusa_collection_utils::core::logger::LogLevel;
+use artisan_middleware::dusa_collection_utils::core::types::pathtype::PathType;
 use artisan_middleware::dusa_collection_utils::log;
-use artisan_middleware::dusa_collection_utils::logger::LogLevel;
-use artisan_middleware::dusa_collection_utils::types::pathtype::PathType;
 use artisan_middleware::state_persistence::AppState;
 use tokio::signal::unix::SignalKind;
 
 use crate::applications::child::{
-    APP_STATUS_ARRAY, CLIENT_APPLICATION_HANDLER, SYSTEM_APPLICATION_HANDLER,
+    populate_initial_state_lock, APP_STATUS_ARRAY, CLIENT_APPLICATION_HANDLER, SYSTEM_APPLICATION_HANDLER
 };
 use crate::applications::resolve::{resolve_client_applications, resolve_system_applications};
 use crate::system::control::LEDGER_PATH;
@@ -17,23 +17,60 @@ use crate::system::state::wind_down_state;
 
 use super::control::GlobalState;
 
-pub async fn handle_signal<F>(
-    signal_kind: SignalKind,
-    callback: F,
-    signal_name: &str,
+pub async fn signal_reciver<F>(
+    kind: SignalKind,
+    action: F,
+    name: &'static str
 ) -> Result<(), Box<dyn std::error::Error>>
 where
     F: Fn() + Send + Sync + 'static,
 {
-    let mut signal = tokio::signal::unix::signal(signal_kind)?;
+    let mut signal = tokio::signal::unix::signal(kind)?;
     while signal.recv().await.is_some() {
-        log!(LogLevel::Info, "Received {}, signaling...", signal_name);
-        callback();
+        log!(LogLevel::Info, "Received {}, signaling...", name);
+        action();
     }
     Ok(())
 }
 
-pub async fn reload_callback(gs: &Arc<GlobalState>) {
+pub async fn signal_listener<F>(
+    kind: SignalKind,
+    action: F,
+    name: &'static str
+) 
+where
+    F: Fn() + Send + Sync + 'static,
+{
+    tokio::spawn(async move {
+        if let Err(e) = signal_reciver(kind, action, name).await {
+            log!(LogLevel::Error, "Error handling {}: {}", name, e);
+        }
+    });
+}
+
+pub fn signal_handler(
+    global_state: Arc<GlobalState>,
+) {
+    tokio::spawn(async move {
+        loop {
+            tokio::select! {
+                _ = global_state.signals.reload_notify.notified() => {
+                    reload_routine(&global_state).await;
+                }
+                _ = global_state.signals.shutdown_notify.notified() => {
+                    shutdown_routine(&global_state).await;
+                }
+                _ = tokio::signal::ctrl_c() => {
+                    log!(LogLevel::Info, "CTRL + C received");
+                    global_state.signals.signal_shutdown();
+                }
+            }
+        }
+    });
+}
+
+
+async fn reload_routine(gs: &Arc<GlobalState>) {
     log!(LogLevel::Info, "Reloading");
     gs.locks.pause_network().await;
     tokio::time::sleep(Duration::from_millis(300)).await;
@@ -65,11 +102,29 @@ pub async fn reload_callback(gs: &Arc<GlobalState>) {
         log!(LogLevel::Error, "{}", err);
     }
 
+    'new_state_lock: {
+        let gs: Arc<GlobalState> = gs.clone();
+        let mut state = match  gs.app_state.try_read() {
+            Ok(state) => {
+                state.clone()
+            },
+            Err(err) => {
+                log!(LogLevel::Warn, "Failed to re-initialize global state lock: {}. Skipping ...", err);
+                break 'new_state_lock;
+            },
+        };
+
+        if let Err(err) = populate_initial_state_lock(&mut state).await {
+            log!(LogLevel::Error, "Failed to re-initialize global state lock: {}. Skipping ...", err.err_mesg);
+            break 'new_state_lock;
+        }
+    }
+
     log!(LogLevel::Info, "Reloaded!");
     gs.locks.resume_network().await;
 }
 
-pub async fn shutdown_callback(gs: &Arc<GlobalState>) {
+async fn shutdown_routine(gs: &Arc<GlobalState>) {
     log!(LogLevel::Info, "Shutting down gracefully");
     tokio::time::sleep(Duration::from_millis(200)).await;
 
@@ -111,7 +166,13 @@ pub async fn shutdown_callback(gs: &Arc<GlobalState>) {
         log!(LogLevel::Debug, "Status: {}", app);
     }
 
-    if let Err(e) = gs.ledger.try_read().await.unwrap().persist_to_disk(LEDGER_PATH) {
+    if let Err(e) = gs
+        .ledger
+        .try_read()
+        .await
+        .unwrap()
+        .persist_to_disk(LEDGER_PATH)
+    {
         log!(LogLevel::Error, "Failed to persist usage ledger: {}", e);
     }
 
@@ -123,7 +184,9 @@ pub async fn shutdown_callback(gs: &Arc<GlobalState>) {
     let mut app_state: AppState = gs.get_state_clone().await.unwrap();
     let app_state_path: &PathType = &gs.app_state_path;
 
-    wind_down_state(&mut app_state, app_state_path).await.unwrap();
+    wind_down_state(&mut app_state, app_state_path)
+        .await
+        .unwrap();
 
     log!(LogLevel::Info, "Bye~");
     std::process::exit(0)

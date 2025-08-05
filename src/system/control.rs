@@ -4,13 +4,15 @@ use std::sync::RwLock;
 use std::{sync::Arc, time::Duration};
 
 use artisan_middleware::config::AppConfig;
-use artisan_middleware::dusa_collection_utils::errors::Errors;
-use artisan_middleware::dusa_collection_utils::logger::LogLevel;
-use artisan_middleware::dusa_collection_utils::types::pathtype::PathType;
-use artisan_middleware::dusa_collection_utils::types::rwarc::LockWithTimeout;
+use artisan_middleware::dusa_collection_utils::core::errors::Errors;
+use artisan_middleware::dusa_collection_utils::core::logger::LogLevel;
+use artisan_middleware::dusa_collection_utils::core::types::pathtype::PathType;
+use artisan_middleware::dusa_collection_utils::core::types::rwarc::LockWithTimeout;
 use artisan_middleware::historics::UsageLedger;
 use artisan_middleware::state_persistence::AppState;
-use artisan_middleware::{control::ToggleControl, dusa_collection_utils::errors::ErrorArrayItem};
+use artisan_middleware::{
+    control::ToggleControl, dusa_collection_utils::core::errors::ErrorArrayItem,
+};
 use artisan_middleware::{dusa_collection_utils::log, identity::Identifier};
 use tokio::net::TcpStream;
 use tokio::sync::{Notify, OnceCell};
@@ -38,9 +40,25 @@ impl GlobalState {
     pub async fn initialize_global_state() -> Result<(), ErrorArrayItem> {
         let signals: Arc<Signals> = Arc::new(Signals::new());
         let locks: Arc<Locks> = Arc::new(Locks::new());
+        
+        // load identity
+        'load_identity: {
+            if let Err(err) = Identifier::load_from_file() {
+                log!(LogLevel::Warn, "Failed to load machine id: {}. Creating....", err.err_mesg);
+                match Identifier::new().await {
+                    Ok(id) => id.save_to_file()?,
+                    Err(err) => {
+                        log!(LogLevel::Error, "Failed to create new machine id: {}.", err.err_mesg);
+                        break 'load_identity;
+                    },
+                }                    
+            }
+        }
+
         let portal_state: PortalState = PortalState::new()?;
         let network_monitor: Arc<BandwidthTracker> = Arc::new(BandwidthTracker::new().await?);
-        let ledger: UsageLedger = UsageLedger::load_from_disk(LEDGER_PATH).unwrap_or_else(|_| UsageLedger::new());
+        let ledger: UsageLedger =
+            UsageLedger::load_from_disk(LEDGER_PATH).unwrap_or_else(|_| UsageLedger::new());
 
         let app_state_data: (Arc<RwLock<AppState>>, PathType) = {
             let config: AppConfig = get_config();
@@ -55,7 +73,7 @@ impl GlobalState {
                     signals.signal_shutdown();
                     tokio::time::sleep(Duration::from_millis(300)).await;
                     unreachable!("Failed to shutdown application. State file failed to load");
-                },
+                }
             };
             let state_path: PathType = get_state_path(&config);
 

@@ -2,19 +2,17 @@ use std::io;
 use std::time::Duration;
 
 use artisan_middleware::aggregator::AppStatus;
-use artisan_middleware::dusa_collection_utils::errors::{ErrorArrayItem, Errors};
-use artisan_middleware::dusa_collection_utils::log;
-use artisan_middleware::dusa_collection_utils::logger::LogLevel;
-use artisan_middleware::dusa_collection_utils::types::stringy::Stringy;
-use artisan_middleware::systemd::SystemdService;
 use artisan_middleware::aggregator::Status;
+use artisan_middleware::dusa_collection_utils::core::errors::{ErrorArrayItem, Errors};
+use artisan_middleware::dusa_collection_utils::core::logger::LogLevel;
+use artisan_middleware::dusa_collection_utils::core::types::stringy::Stringy;
+use artisan_middleware::dusa_collection_utils::log;
+use artisan_middleware::systemd::SystemdService;
 use nix::libc::kill;
 
 use crate::applications::child::{
-        SupervisedProcesses, APP_STATUS_ARRAY, CLIENT_APPLICATION_HANDLER,
-        SYSTEM_APPLICATION_HANDLER,
-    };
-
+    SupervisedProcesses, APP_STATUS_ARRAY, CLIENT_APPLICATION_HANDLER, SYSTEM_APPLICATION_HANDLER,
+};
 
 pub async fn stop_application(app_id: &Stringy) -> Result<(), ErrorArrayItem> {
     let app_status_array_write_lock: tokio::sync::RwLockReadGuard<
@@ -22,7 +20,7 @@ pub async fn stop_application(app_id: &Stringy) -> Result<(), ErrorArrayItem> {
         std::collections::HashMap<Stringy, artisan_middleware::aggregator::AppStatus>,
     > = APP_STATUS_ARRAY.try_read().await?;
 
-    let app_status =  app_status_array_write_lock.get(&app_id);
+    let app_status = app_status_array_write_lock.get(&app_id);
 
     match app_status {
         Some(app) => {
@@ -150,9 +148,7 @@ fn send_reload(pid: i32) -> Result<(), ErrorArrayItem> {
     }
 }
 
-pub async fn start_application(
-    app_id: &Stringy,
-) -> Result<(), ErrorArrayItem> {
+pub async fn start_application(app_id: &Stringy) -> Result<(), ErrorArrayItem> {
     let app_status_array_read_lock = APP_STATUS_ARRAY
         .try_read_with_timeout(Some(Duration::from_secs(20)))
         .await?;
@@ -182,15 +178,13 @@ pub async fn start_application(
                 ),
             )
         })
-        .map(|active| {
-            match active {
-                true => send_stop(app),
-                false => {
-                    if let Err(err) = systemd_app.start() {
-                        Err(ErrorArrayItem::new(Errors::Unauthorized, err.to_string()))
-                    } else {
-                        Ok(())
-                    }
+        .map(|active| match active {
+            true => send_stop(app),
+            false => {
+                if let Err(err) = systemd_app.start() {
+                    Err(ErrorArrayItem::new(Errors::Unauthorized, err.to_string()))
+                } else {
+                    Ok(())
                 }
             }
         })?
@@ -228,7 +222,7 @@ pub async fn start_application(
 //     state_path: &PathType,
 //     gs: &Arc<GlobalState>
 // ) -> Result<bool, ErrorArrayItem> {
-//     // updating the client application index    
+//     // updating the client application index
 //     resolve_client_applications(gs).await?;
 
 //     for cli_app in CLIENT_APPLICATION_ARRAY
