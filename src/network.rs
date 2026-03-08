@@ -1,10 +1,12 @@
-use artisan_middleware::dusa_collection_utils::{errors::ErrorArrayItem, log};
+use artisan_middleware::dusa_collection_utils::{core::errors::ErrorArrayItem, log};
 use artisan_middleware::{
     aggregator::{AppMessage, Command, CommandResponse, CommandType},
     config::AppConfig,
     dusa_collection_utils::{
-        logger::LogLevel,
-        types::{pathtype::PathType, stringy::Stringy},
+        core::{
+            logger::LogLevel,
+            types::{pathtype::PathType, stringy::Stringy},
+        },
     },
     portal::ManagerData,
     state_persistence::AppState,
@@ -21,17 +23,17 @@ use tokio::net::TcpStream;
 use crate::{
     applications::{
         child::APP_STATUS_ARRAY,
-        start_stop::{reload_application, start_application, stop_application},
     },
     system::{control::Controls, manager::get_manager_data},
+    watchdog,
 };
 
 pub async fn process_tcp(
     mut connection: (TcpStream, SocketAddr),
     application_controls: Arc<Controls>,
     state: &mut AppState,
-    state_path: &PathType,
-    config: &AppConfig,
+    _state_path: &PathType,
+    _config: &AppConfig,
 ) -> Result<(), ErrorArrayItem> {
     let proto: Proto = Proto::TCP;
 
@@ -59,7 +61,7 @@ pub async fn process_tcp(
 
     match recieved_payload {
         AppMessage::Command(command) => {
-            match command_processor(command, application_controls, state, state_path, config).await
+            match command_processor(command, application_controls, state).await
             {
                 Ok(data) => {
                     let message: ProtocolMessage<AppMessage> =
@@ -85,8 +87,6 @@ async fn command_processor(
     command: Command,
     application_controls: Arc<Controls>,
     state: &mut AppState,
-    state_path: &PathType,
-    config: &AppConfig,
 ) -> Result<AppMessage, ErrorArrayItem> {
     if let Err(err) = application_controls
         .wait_for_network_control_with_timeout(Duration::from_secs(1))
@@ -104,23 +104,22 @@ async fn command_processor(
     let app_id: Stringy = command.app_id;
     match command.command_type {
         artisan_middleware::aggregator::CommandType::Start => {
-            match start_application(&app_id, state, state_path, config).await {
-                Ok(_) => {
-                    return Ok(AppMessage::Response(CommandResponse {
-                        app_id,
-                        command_type: CommandType::Start,
-                        success: true,
-                        message: None,
-                    }))
-                }
-                Err(err) => {
-                    return Ok(AppMessage::Response(CommandResponse {
-                        app_id,
-                        command_type: CommandType::Start,
-                        success: false,
-                        message: Some(err.to_string()),
-                    }));
-                }
+            match watchdog::execute_start(&app_id.to_string()).await {
+                Ok(response) => Ok(AppMessage::Response(CommandResponse {
+                    app_id,
+                    command_type: CommandType::Start,
+                    success: response.accepted,
+                    message: match response.message.trim() {
+                        "" => None,
+                        msg => Some(msg.to_owned()),
+                    },
+                })),
+                Err(err) => Ok(AppMessage::Response(CommandResponse {
+                    app_id,
+                    command_type: CommandType::Start,
+                    success: false,
+                    message: Some(format!("Watchdog unavailable: {}", err)),
+                })),
             }
         }
         artisan_middleware::aggregator::CommandType::Stop => {
@@ -134,24 +133,22 @@ async fn command_processor(
                 }));
             }
 
-            match stop_application(&app_id).await {
-                Ok(_) => {
-                    return Ok(AppMessage::Response(CommandResponse {
-                        app_id,
-                        command_type: CommandType::Stop,
-                        success: true,
-                        message: None,
-                    }))
-                }
-                Err(err) => {
-                    log!(LogLevel::Error, "Failed to stop {}, {}", app_id, err);
-                    return Ok(AppMessage::Response(CommandResponse {
-                        app_id,
-                        command_type: CommandType::Stop,
-                        success: false,
-                        message: Some(err.to_string()),
-                    }));
-                }
+            match watchdog::execute_stop(&app_id.to_string()).await {
+                Ok(response) => Ok(AppMessage::Response(CommandResponse {
+                    app_id,
+                    command_type: CommandType::Stop,
+                    success: response.accepted,
+                    message: match response.message.trim() {
+                        "" => None,
+                        msg => Some(msg.to_owned()),
+                    },
+                })),
+                Err(err) => Ok(AppMessage::Response(CommandResponse {
+                    app_id,
+                    command_type: CommandType::Stop,
+                    success: false,
+                    message: Some(format!("Watchdog unavailable: {}", err)),
+                })),
             }
         }
         artisan_middleware::aggregator::CommandType::Restart => {
@@ -166,24 +163,22 @@ async fn command_processor(
                 }));
             }
 
-            match reload_application(&app_id).await {
-                Ok(_) => {
-                    return Ok(AppMessage::Response(CommandResponse {
-                        app_id,
-                        command_type: CommandType::Restart,
-                        success: true,
-                        message: None,
-                    }))
-                }
-                Err(err) => {
-                    log!(LogLevel::Error, "Failed to stop {}, {}", app_id, err);
-                    return Ok(AppMessage::Response(CommandResponse {
-                        app_id,
-                        command_type: CommandType::Restart,
-                        success: false,
-                        message: Some(err.to_string()),
-                    }));
-                }
+            match watchdog::execute_reload(&app_id.to_string()).await {
+                Ok(response) => Ok(AppMessage::Response(CommandResponse {
+                    app_id,
+                    command_type: CommandType::Restart,
+                    success: response.accepted,
+                    message: match response.message.trim() {
+                        "" => None,
+                        msg => Some(msg.to_owned()),
+                    },
+                })),
+                Err(err) => Ok(AppMessage::Response(CommandResponse {
+                    app_id,
+                    command_type: CommandType::Restart,
+                    success: false,
+                    message: Some(format!("Watchdog unavailable: {}", err)),
+                })),
             }
         }
         artisan_middleware::aggregator::CommandType::Status => {

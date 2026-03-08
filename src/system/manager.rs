@@ -1,8 +1,10 @@
 use artisan_middleware::{
     dusa_collection_utils::{
-        errors::{ErrorArrayItem, Errors},
-        functions::current_timestamp,
-        types::pathtype::PathType,
+        core::{
+            errors::{ErrorArrayItem, Errors},
+            functions::current_timestamp,
+            types::pathtype::PathType,
+        },
     },
     git_actions::{GitAuth, GitCredentials},
     portal::ManagerData,
@@ -10,13 +12,16 @@ use artisan_middleware::{
 };
 use simple_comms::network::utils::get_local_ip;
 
-use crate::applications::child::{
-    APP_STATUS_ARRAY, CLIENT_APPLICATION_ARRAY, SYSTEM_APPLICATION_ARRAY,
-};
+use once_cell::sync::Lazy;
+use std::sync::atomic::{AtomicBool, Ordering};
+
+use crate::applications::child::APP_STATUS_ARRAY;
 
 use gethostname::gethostname;
 
 use super::portal::load_identifier;
+
+static WATCHDOG_SECURITY_TRIPPED_EVER: Lazy<AtomicBool> = Lazy::new(|| AtomicBool::new(false));
 
 pub async fn get_manager_data(state: &mut AppState) -> Result<ManagerData, ErrorArrayItem> {
     let manager_version = state.version.clone();
@@ -36,35 +41,26 @@ pub async fn get_manager_data(state: &mut AppState) -> Result<ManagerData, Error
         ));
     };
 
-    let system_array = SYSTEM_APPLICATION_ARRAY.try_read().await?;
-    let client_array = CLIENT_APPLICATION_ARRAY.try_read().await?;
     let status_array = APP_STATUS_ARRAY.try_read().await?;
-    let mut uptime = None;
-
-    status_array.clone().into_iter().for_each(|status| {
-        if status.1.app_id == "ais_manager".into() {
-            uptime = status.1.uptime
+    let mut system_apps: u32 = 0;
+    let mut client_apps: u32 = 0;
+    for (_, status) in status_array.iter() {
+        if status.app_data.is_system_application() {
+            system_apps += 1;
+        } else {
+            client_apps += 1;
         }
-    });
+    }
 
-    let system_warning_count = {
-        let mut num = 0;
-        for system in system_array.clone() {
-            let state = system.1.config.get_state();
-            let count = state.error_log.len();
-            num += count
+    if let Ok(status) = crate::watchdog::get_security_trip_status().await {
+        if status.tripped {
+            WATCHDOG_SECURITY_TRIPPED_EVER.store(true, Ordering::Relaxed);
         }
-        num
-    };
-
-    let client_warning_count = {
-        let mut num = 0;
-        for client in client_array.clone() {
-            let state = client.1.config.get_state();
-            let count = state.error_log.len();
-            num += count
-        }
-        num
+    }
+    let watchdog_security_warning = if WATCHDOG_SECURITY_TRIPPED_EVER.load(Ordering::Relaxed) {
+        1
+    } else {
+        0
     };
 
     let identity = if let Some(id) = load_identifier().await {
@@ -79,9 +75,11 @@ pub async fn get_manager_data(state: &mut AppState) -> Result<ManagerData, Error
     let manager_data = ManagerData {
         version: manager_version,
         git_config: git_credentials,
-        system_apps: system_array.len() as u32,
-        client_apps: client_array.len() as u32,
-        warning: (client_warning_count + system_warning_count) as u32,
+        system_apps,
+        client_apps,
+        // NOTE: The portal warning count is now reserved for watchdog security/tamper trips only.
+        // Watchdog derives `manager_linked` separately via the manager state-file marker.
+        warning: watchdog_security_warning,
         hostname: match gethostname().into_string() {
             Ok(data) => data.into(),
             Err(_) => "Failed to resolve hostname".into(),

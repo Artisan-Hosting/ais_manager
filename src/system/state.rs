@@ -1,17 +1,47 @@
 use artisan_middleware::dusa_collection_utils::log;
-use artisan_middleware::dusa_collection_utils::logger::LogLevel;
-use artisan_middleware::dusa_collection_utils::{
+use artisan_middleware::dusa_collection_utils::core::{
     errors::{ErrorArrayItem, Errors},
     functions::current_timestamp,
+    logger::LogLevel,
 };
 use artisan_middleware::{
     config::AppConfig,
-    dusa_collection_utils::types::pathtype::PathType,
+    dusa_collection_utils::core::types::pathtype::PathType,
     state_persistence::{self, AppState, StatePersistence},
 };
 
+const WATCHDOG_CONNECTED_PREFIX: &str = "watchdog_connected";
+
 pub fn get_state_path(config: &AppConfig) -> PathType {
     state_persistence::StatePersistence::get_state_path(&config)
+}
+
+pub fn upsert_watchdog_connection_marker(data: &str, socket_path: Option<&str>) -> String {
+    let mut retained: Vec<String> = Vec::new();
+
+    for raw_line in data.lines() {
+        let line = raw_line.trim();
+        if line.is_empty() {
+            continue;
+        }
+
+        if let Some((key, _)) = line.split_once(':').or_else(|| line.split_once('=')) {
+            if key.trim() == WATCHDOG_CONNECTED_PREFIX {
+                continue;
+            }
+        }
+
+        retained.push(raw_line.to_string());
+    }
+
+    if let Some(socket_path) = socket_path {
+        let socket = socket_path.trim();
+        if !socket.is_empty() {
+            retained.push(format!("{WATCHDOG_CONNECTED_PREFIX}:{socket}"));
+        }
+    }
+
+    retained.join("\n")
 }
 
 pub async fn save_state(state: &mut AppState, path: &PathType) {

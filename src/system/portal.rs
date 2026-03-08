@@ -1,8 +1,7 @@
 use artisan_middleware::dusa_collection_utils::log;
-use artisan_middleware::dusa_collection_utils::logger::LogLevel;
 use artisan_middleware::{
     config::AppConfig,
-    dusa_collection_utils::errors::{ErrorArrayItem, Errors},
+    dusa_collection_utils::core::{errors::{ErrorArrayItem, Errors}, logger::LogLevel},
     identity::Identifier,
     network::resolve_url,
     portal::{ManagerData, PortalMessage},

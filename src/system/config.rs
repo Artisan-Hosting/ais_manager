@@ -1,12 +1,14 @@
 use artisan_middleware::dusa_collection_utils::{
+    core::{
+        logger::{set_log_level, LogLevel},
+        version::{SoftwareVersion, Version, VersionCode},
+    },
     log,
-    logger::{set_log_level, LogLevel},
-    version::{SoftwareVersion, Version, VersionCode},
 };
 use artisan_middleware::{
     aggregator::Status,
     config::AppConfig,
-    dusa_collection_utils::types::{pathtype::PathType, stringy::Stringy},
+    dusa_collection_utils::core::types::{pathtype::PathType, stringy::Stringy},
     state_persistence::{AppState, StatePersistence},
     timestamp::current_timestamp,
     version::{aml_version, str_to_version},

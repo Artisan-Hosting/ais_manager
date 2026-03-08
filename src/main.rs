@@ -1,17 +1,17 @@
 use applications::{
-    child::{populate_initial_state_lock, CLIENT_APPLICATION_HANDLER, SYSTEM_APPLICATION_HANDLER},
-    monitor::{
-        handle_dead_applications, handle_new_client_applications, handle_new_system_applications,
-        monitor_application_resource_usage, update_client_state, update_system_state,
-    },
-    resolve::{resolve_client_applications, resolve_system_applications},
+    child::upsert_local_manager_state,
+    watchdog_sync::{refresh_logs_from_state_files, refresh_status_from_watchdog},
 };
-use artisan_middleware::dusa_collection_utils::{
+use artisan_middleware::dusa_collection_utils::core::{
     errors::ErrorArrayItem,
     logger::LogLevel,
     types::{pathtype::PathType, rwarc::LockWithTimeout, stringy::Stringy},
 };
-use artisan_middleware::{aggregator::AppStatus, config::AppConfig, state_persistence::AppState};
+use artisan_middleware::{
+    aggregator::AppStatus,
+    config::AppConfig,
+    state_persistence::{AppState, StatePersistence},
+};
 use artisan_middleware::{dusa_collection_utils::log, identity::Identifier};
 use network::process_tcp;
 use std::{collections::HashMap, sync::Arc, time::Duration};
@@ -26,6 +26,7 @@ use tokio::{net::TcpListener, time::sleep};
 mod applications;
 mod network;
 mod system;
+mod watchdog;
 
 pub type AppStatusArray = LockWithTimeout<HashMap<Stringy, AppStatus>>;
 
@@ -47,9 +48,10 @@ async fn main() -> Result<(), ErrorArrayItem> {
         }
     }
     {
-        resolve_client_applications(&state.config).await?;
-        resolve_system_applications().await?;
-        populate_initial_state_lock(&mut state).await?;
+        upsert_local_manager_state(&state).await?;
+        if let Err(err) = refresh_status_from_watchdog().await {
+            log!(LogLevel::Warn, "Initial watchdog inventory sync failed: {}", err);
+        }
     }
 
     // seting up trackers
@@ -65,51 +67,58 @@ async fn main() -> Result<(), ErrorArrayItem> {
     application_controls.start_signal_monitors();
     application_controls
         .clone()
-        .start_contol_monitor(state.clone());
+        .start_contol_monitor();
 
-    // Update metrics
-    let mut state_clone = state.clone();
-    // let config_clone = config.clone();
+    // Sync inventory/status/metrics from watchdog.
     tokio::spawn(async move {
         loop {
-            if let Err(err) = handle_new_system_applications().await {
-                log!(LogLevel::Error, "{}", err);
-            };
-            sleep(Duration::from_millis(150)).await;
-
-            if let Err(err) = handle_new_client_applications(&mut state_clone).await {
-                log!(LogLevel::Error, "{}", err);
-            };
-            sleep(Duration::from_millis(150)).await;
-
-            if let Err(err) =
-                monitor_application_resource_usage(SYSTEM_APPLICATION_HANDLER.clone()).await
-            {
-                log!(LogLevel::Error, "{}", err);
-            };
-            sleep(Duration::from_millis(150)).await;
-
-            if let Err(err) =
-                monitor_application_resource_usage(CLIENT_APPLICATION_HANDLER.clone()).await
-            {
-                log!(LogLevel::Error, "{}", err);
-            };
-            sleep(Duration::from_millis(150)).await;
-
-            if let Err(err) = handle_dead_applications().await {
-                log!(LogLevel::Error, "{}", err);
+            if let Err(err) = refresh_status_from_watchdog().await {
+                log!(LogLevel::Warn, "Watchdog status sync failed: {}", err);
             }
-            sleep(Duration::from_millis(150)).await;
+            sleep(Duration::from_secs(2)).await;
+        }
+    });
 
-            if let Err(err) = update_client_state(&mut state_clone).await {
-                log!(LogLevel::Error, "{}", err);
+    // Refresh logs from per-app state files (client-app direct stdout/stderr).
+    tokio::spawn(async move {
+        loop {
+            if let Err(err) = refresh_logs_from_state_files().await {
+                log!(LogLevel::Warn, "State-file log refresh failed: {}", err);
             }
-            sleep(Duration::from_millis(150)).await;
+            sleep(Duration::from_secs(5)).await;
+        }
+    });
 
-            if let Err(err) = update_system_state().await {
-                log!(LogLevel::Error, "{}", err);
+    // Keep the watchdog connection marker fresh for watchdog `manager_linked` detection.
+    let state_path_for_watchdog = state_path.clone();
+    tokio::spawn(async move {
+        let mut was_connected = false;
+        loop {
+            let connected = crate::watchdog::is_reachable(Duration::from_millis(800)).await;
+            let mut sleep_for = Duration::from_secs(if connected { 10 } else { 30 });
+
+            let should_persist = connected || connected != was_connected;
+            if should_persist {
+                let manager_state = match StatePersistence::load_state(&state_path_for_watchdog).await
+                {
+                    Ok(state) => Some(state),
+                    Err(_) => None,
+                };
+
+                if let Some(mut manager_state) = manager_state {
+                    manager_state.data = crate::system::state::upsert_watchdog_connection_marker(
+                        &manager_state.data,
+                        connected.then_some(crate::watchdog::socket_path()),
+                    );
+                    crate::system::state::save_state(&mut manager_state, &state_path_for_watchdog)
+                        .await;
+                } else {
+                    sleep_for = Duration::from_secs(1);
+                }
             }
-            sleep(Duration::from_millis(150)).await;
+
+            was_connected = connected;
+            sleep(sleep_for).await;
         }
     });
 

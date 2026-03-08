@@ -12,6 +12,3 @@ pub mod portal;
 
 // manager data function
 pub mod manager;
-
-//driver for interacting with ebpf system
-pub mod ebpf;

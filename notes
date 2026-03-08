@@ -1,0 +1,64 @@
+const MANAGER_WATCHDOG_CONNECTED_PREFIX: &str = "watchdog_connected";
+
+/// Refreshes the `manager_linked` bit in the system information store by
+/// reading `ais_manager`'s state file and looking for a connection marker in
+/// its `data` field.
+pub(super) async fn refresh_manager_linked_once(
+    system_information_store: &definitions::SystemInformationStore,
+) {
+    let path = state_file_path(AIS_MANAGER);
+    let (linked, socket_path) = match StatePersistence::load_state(&path).await {
+        Ok(state) => {
+            let now = current_timestamp_wrapper();
+            let age_seconds = now.saturating_sub(state.last_updated);
+            let socket = parse_manager_watchdog_socket(&state.data);
+            let linked = socket.is_some()
+                && age_seconds < STATE_STALE_THRESHOLD_SECONDS
+                && !matches!(state.status, Status::Stopped | Status::Unknown);
+            (linked, socket)
+        }
+        Err(_) => (false, None),
+    };
+
+    let mut guard = system_information_store.write().await;
+    let was_linked = guard.manager_linked;
+    guard.manager_linked = linked;
+
+    if was_linked != linked {
+        if linked {
+            log!(
+                LogLevel::Info,
+                "Manager marked linked via state file marker{}",
+                socket_path
+                    .as_deref()
+                    .map(|path| format!(" (socket={})", path))
+                    .unwrap_or_default()
+            );
+        } else {
+            log!(LogLevel::Info, "Manager marked unlinked");
+        }
+    }
+}
+
+fn parse_manager_watchdog_socket(data: &str) -> Option<String> {
+    // Supports either `watchdog_connected:/path` or `watchdog_connected=/path`.
+    for raw_line in data.lines() {
+        let line = raw_line.trim();
+        if line.is_empty() {
+            continue;
+        }
+
+        if let Some((key, value)) = line.split_once(':').or_else(|| line.split_once('=')) {
+            if key.trim() != MANAGER_WATCHDOG_CONNECTED_PREFIX {
+                continue;
+            }
+            let socket = value.trim();
+            if socket.is_empty() {
+                continue;
+            }
+            return Some(socket.to_string());
+        }
+    }
+
+    None
+}
