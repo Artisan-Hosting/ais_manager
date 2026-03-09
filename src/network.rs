@@ -65,7 +65,7 @@ pub async fn process_tcp(
             {
                 Ok(data) => {
                     let message: ProtocolMessage<AppMessage> =
-                        ProtocolMessage::new(Flags::OPTIMIZED, data)?;
+                        ProtocolMessage::new(Flags::ENCRYPTED | Flags::COMPRESSED, data)?;
                     let message_bytes: Vec<u8> = message.format().await?;
                     send_data(&mut connection.0, message_bytes, proto).await?;
                 }
