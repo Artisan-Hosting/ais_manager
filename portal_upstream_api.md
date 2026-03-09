@@ -232,3 +232,9 @@ This avoids having to reimplement:
 - The `simple_comms` framing (`-EOL-`), header parsing, and flag transforms.
 - Bincode layouts of `AppMessage`/`PortalMessage`.
 
+### Repo-provided debug CLI
+
+This repo includes a feature-gated CLI binary:
+
+- Build: `cargo build --features debug-cli --bin ais_manager_debug`
+- Run: `cargo run --features debug-cli --bin ais_manager_debug -- --help`
