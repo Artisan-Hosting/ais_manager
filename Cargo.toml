@@ -3,6 +3,21 @@ name = "ais_manager"
 version = "3.0.0"
 edition = "2024"
 build = "build.rs"
+default-run = "ais_manager"
+
+[features]
+# Feature-gated debug CLI so production automation can keep running plain `cargo build`
+# without building extra binaries.
+debug-cli = []
+
+[[bin]]
+name = "ais_manager"
+path = "src/main.rs"
+
+[[bin]]
+name = "ais_manager_debug"
+path = "src/bin/ais_manager_debug.rs"
+required-features = ["debug-cli"]
 
 [dependencies]
 artisan_middleware = { git = "https://github.com/Artisan-Hosting/artisan_lib.git", branch = "stable" }
