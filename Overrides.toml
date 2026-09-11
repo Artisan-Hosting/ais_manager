@@ -6,7 +6,7 @@ log_level = "Info"
 
 [git]
 default_server = "GitHub"
-credentials_file = "/opt/artisan/git.cf"
+credentials_file = "/opt/artisan/etc/git.cf"
 
 [aggregator]
 socket_path = "/var/run/manager.sock"

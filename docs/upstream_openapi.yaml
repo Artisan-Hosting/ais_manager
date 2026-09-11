@@ -80,6 +80,83 @@ paths:
         framing: simple-comms
         headerSchema: '#/components/schemas/SimpleCommsHeader'
         payloadEncoding: bincode<AppMessage::Command>
+  /portal/command/git-repos:
+    post:
+      tags: [PortalControl]
+      summary: Read or edit the git monitor's repo list
+      operationId: Portal_GitRepos
+      description: |
+        Reads and writes `git.cf`, the git monitor's repo list, on the node the tunnel
+        reaches. Until this existed the only way to change it was the interactive `gitcf`
+        menu on the box itself.
+
+        Not a distinct message: these are `AppMessage::Command` with
+        `command_type: Custom("<Verb> <json>")`, executed by `network::command_processor`
+        like every other command — so `ais_manager_debug git-repos ...` exercises exactly
+        the same path the portal does. The JSON body rides inside the `Custom` string
+        because `Command` carries only `app_id`, `command_type` and `timestamp`, and the
+        wire is bincode of that struct; giving it a real body field would break every peer
+        in the fleet at once. `app_id` is unused.
+
+        Verbs:
+          - `GitReposGet` — no body. Returns the envelope; this is also the backup format.
+          - `GitReposSet` — an envelope. Replaces the whole list; this is the restore.
+          - `GitReposAdd` — one repo object. Fails if the derived id already exists.
+          - `GitReposUpdate` — `{"id": "...", "repo": {...}}`.
+          - `GitReposRemove` — `{"id": "..."}`.
+
+        A repo's id is **derived, not stored**: `sha256("{branch}-{repo}-{user}")[..8]`,
+        the same hash that names its checkout under `/var/www/ais/` and identifies it as a
+        runner to watchdog and the portal. `server` and `token` are not part of it. An `id`
+        sent on ingest is ignored and recomputed, so a dump from one host restores onto
+        another; an update that touches user/repo/branch therefore *moves* the entry, and
+        the response says so in `moved`.
+
+        Mutating bodies take `"reload": bool` (default `true`), which stops and restarts
+        `ais_gitmon`. It is a real restart, not a reload: gitmon's SIGHUP handler re-reads
+        only `AppConfig` and never re-reads `git.cf`, so sending it SIGHUP would report
+        success while changing nothing. With `"reload": false` the file is written and the
+        running monitor keeps its old list until something restarts it.
+
+        Errors are in band — `CommandResponse` with `success: false` and a readable
+        message — for a malformed body, an unknown id, a duplicate id, a schema mismatch,
+        or an envelope over the 48 KB transport ceiling.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/PortalCommandRequest'
+            examples:
+              read:
+                summary: Dump the repo list (also the backup)
+                value:
+                  app_id: ""
+                  command_type: { Custom: "GitReposGet" }
+                  timestamp: 1757606400
+              add:
+                summary: Add a repo and restart the monitor
+                value:
+                  app_id: ""
+                  command_type:
+                    Custom: >-
+                      GitReposAdd {"user":"acme","repo":"web","branch":"main",
+                      "server":"GitHub","reload":true}
+                  timestamp: 1757606400
+      responses:
+        '200':
+          description: >-
+            A `CommandResponse` whose `message` is the JSON envelope: `schema`, `hostname`,
+            `exported_at`, `path`, `repos[]`, plus a `reload` block reporting whether the
+            restart was attempted and whether it succeeded.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/PortalCommandResult'
+      x-transport:
+        framing: simple-comms
+        headerSchema: '#/components/schemas/SimpleCommsHeader'
+        payloadEncoding: bincode<AppMessage::Command>
   /portal/registration/discover:
     post:
       tags: [PortalRegistration]

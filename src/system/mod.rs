@@ -13,6 +13,9 @@ pub mod portal;
 // manager data function
 pub mod manager;
 
+// the git monitor's repo list, read and written on behalf of the portal
+pub mod git_repos;
+
 // Noise_NK static keys for both simple_comms channels
 pub mod noise;
 

@@ -336,7 +336,21 @@ pub(crate) async fn command_processor(
             return Ok(AppMessage::ManagerInfo(manager_data));
         }
 
-        _ => {
+        // `Custom` is the extension point for verbs the shared crate does not
+        // model. The payload rides after the first space because
+        // `Command` has nowhere else to put one -- it carries only `app_id`,
+        // `command_type` and `timestamp`, and the wire is bincode of those, so
+        // adding a real body field would break every peer at once.
+        artisan_middleware::aggregator::CommandType::Custom(ref raw) => {
+            let (verb, body) = match raw.split_once(' ') {
+                Some((verb, body)) => (verb, body.trim()),
+                None => (raw.as_str(), ""),
+            };
+
+            if crate::system::git_repos::handles(verb) {
+                return Ok(crate::system::git_repos::handle(verb, body, &state.config).await);
+            }
+
             return Ok(AppMessage::Response(CommandResponse {
                 app_id,
                 command_type: CommandType::Custom("command not found".to_string()),
