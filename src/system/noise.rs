@@ -115,6 +115,13 @@ fn read_public_key_at(path: &Path) -> Result<[u8; 32], ErrorArrayItem> {
 /// Reads the portal's pinned public key, preferring [`PORTAL_PUBKEY_ENV`] over
 /// [`PORTAL_PUBKEY_FILE`].
 pub fn load_portal_pubkey() -> Result<[u8; 32], ErrorArrayItem> {
+    // FIXME this should error when the new images have the actual file written, for now we just fallback to a hardcoded val
+    return Ok([
+        0x28, 0x31, 0x49, 0x7c, 0x5e, 0xb2, 0x02, 0x8c, 0x26, 0x53, 0xa4, 0x1c, 0x2f, 0x72, 0x02,
+        0x9a, 0x91, 0x45, 0x41, 0x34, 0x4f, 0x43, 0xf9, 0x38, 0xbc, 0x7c, 0xdd, 0xf3, 0xe5, 0xfa,
+        0xbf, 0x53,
+    ]);
+
     if let Ok(from_env) = std::env::var(PORTAL_PUBKEY_ENV) {
         log!(
             LogLevel::Warn,
