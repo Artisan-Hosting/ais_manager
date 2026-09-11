@@ -631,6 +631,24 @@ async fn run(verb: &str, body: &str, config: &AppConfig) -> Result<ReposResponse
         credentials.auth_items.len()
     );
 
+    // Sync configured repositories (clone if missing, force pull/sync if existing)
+    if let Err(err) = sync_configured_repos(&credentials).await {
+        log!(
+            LogLevel::Error,
+            "Failed to sync configured repositories: {}",
+            err.err_mesg
+        );
+    }
+
+    // Cleanup any stale repositories
+    if let Err(err) = cleanup_stale_repos(&credentials) {
+        log!(
+            LogLevel::Error,
+            "Failed to cleanup stale repositories: {}",
+            err
+        );
+    }
+
     Ok(ReposResponse {
         envelope: envelope(&credentials, &path),
         reload: apply(reload).await,
@@ -695,6 +713,433 @@ fn find_index(credentials: &GitCredentials, id: &str) -> Option<usize> {
         .position(|auth| auth.generate_id().to_string() == id)
 }
 
+fn get_repo_root() -> &'static str {
+    #[cfg(not(test))]
+    {
+        "/var/www/ais"
+    }
+    #[cfg(test)]
+    {
+        "/tmp/ais_git_repos_test_root"
+    }
+}
+
+fn get_repo_path(auth: &GitAuth) -> PathBuf {
+    #[cfg(not(test))]
+    {
+        PathBuf::from(artisan_middleware::git_actions::generate_git_project_path(auth).to_string())
+    }
+    #[cfg(test)]
+    {
+        PathBuf::from(format!("/tmp/ais_git_repos_test_root/{}", auth.generate_id()))
+    }
+}
+
+fn is_managed_checkout_name(name: &str) -> bool {
+    name.len() == 8 && name.bytes().all(|byte| byte.is_ascii_hexdigit())
+}
+
+pub fn cleanup_stale_repos(credentials: &GitCredentials) -> Result<usize, String> {
+    use std::collections::HashSet;
+
+    let root = get_repo_root();
+    let expected_paths: HashSet<PathBuf> = credentials
+        .auth_items
+        .iter()
+        .map(|auth| get_repo_path(auth))
+        .collect();
+
+    let entries = match fs::read_dir(root) {
+        Ok(entries) => entries,
+        Err(err) if err.kind() == std::io::ErrorKind::NotFound => return Ok(0),
+        Err(err) => return Err(format!("Failed to read {}: {}", root, err)),
+    };
+
+    let mut removed = 0;
+    for entry in entries {
+        let entry = match entry {
+            Ok(e) => e,
+            Err(_) => continue,
+        };
+        let path = entry.path();
+        let Some(name) = entry.file_name().to_str().map(str::to_string) else {
+            continue;
+        };
+
+        if is_managed_checkout_name(&name) && !expected_paths.contains(&path) {
+            log!(LogLevel::Info, "Removing stale checkout directory '{}'", path.display());
+            if path.is_dir() {
+                if let Err(err) = fs::remove_dir_all(&path) {
+                    log!(LogLevel::Error, "Failed to remove stale directory '{}': {}", path.display(), err);
+                } else {
+                    removed += 1;
+                }
+            } else {
+                if let Err(err) = fs::remove_file(&path) {
+                    log!(LogLevel::Error, "Failed to remove stale file '{}': {}", path.display(), err);
+                } else {
+                    removed += 1;
+                }
+            }
+        }
+    }
+
+    Ok(removed)
+}
+
+fn get_gh_token() -> std::io::Result<String> {
+    let output = std::process::Command::new("gh")
+        .arg("auth")
+        .arg("token")
+        .output()?;
+
+    if output.status.success() {
+        Ok(String::from_utf8_lossy(&output.stdout).trim().to_string())
+    } else {
+        Err(std::io::Error::new(
+            std::io::ErrorKind::Other,
+            "Failed to get token from GitHub CLI",
+        ))
+    }
+}
+
+fn parse_token(raw: &str) -> Option<String> {
+    let trimmed = raw.trim();
+    if trimmed.is_empty() {
+        return None;
+    }
+
+    if let Ok(value) = trimmed.parse::<toml::Value>() {
+        if let Some(token) = value.get("token").and_then(|v| v.as_str()) {
+            let token = token.trim();
+            if !token.is_empty() {
+                return Some(token.to_string());
+            }
+        }
+        if let Some(token) = value
+            .get("git")
+            .and_then(|v| v.get("token"))
+            .and_then(|v| v.as_str())
+        {
+            let token = token.trim();
+            if !token.is_empty() {
+                return Some(token.to_string());
+            }
+        }
+        if let Some(token) = value
+            .get("github")
+            .and_then(|v| v.get("token"))
+            .and_then(|v| v.as_str())
+        {
+            let token = token.trim();
+            if !token.is_empty() {
+                return Some(token.to_string());
+            }
+        }
+    }
+
+    trimmed
+        .lines()
+        .map(str::trim)
+        .find(|line| !line.is_empty() && !line.starts_with('#'))
+        .map(str::to_string)
+}
+
+fn get_token_from_file(path: &str) -> std::io::Result<String> {
+    let raw = fs::read_to_string(path)?;
+    parse_token(&raw).ok_or_else(|| {
+        std::io::Error::new(
+            std::io::ErrorKind::InvalidData,
+            format!("No token found in token file '{}'", path),
+        )
+    })
+}
+
+fn get_git_token_file() -> Option<String> {
+    let contents = match fs::read_to_string("Overrides.toml") {
+        Ok(contents) => contents,
+        Err(_) => return None,
+    };
+
+    let parsed = match contents.parse::<toml::Value>() {
+        Ok(parsed) => parsed,
+        Err(_) => return None,
+    };
+
+    parsed
+        .get("git")
+        .and_then(|git| git.get("token_file"))
+        .and_then(|v| v.as_str())
+        .map(str::to_string)
+}
+
+fn get_configured_or_cli_token() -> Result<String, String> {
+    let token_file = get_git_token_file();
+    if let Some(ref path) = token_file {
+        if !path.trim().is_empty() {
+            match get_token_from_file(path) {
+                Ok(token) => return Ok(token),
+                Err(file_err) => {
+                    return get_gh_token().map_err(|err| {
+                        format!(
+                            "Failed to load token from token_file '{}': {}. Fallback to GitHub CLI also failed: {}",
+                            path, file_err, err
+                        )
+                    });
+                }
+            }
+        }
+    }
+
+    get_gh_token().map_err(|err| format!("Failed to get token from GitHub CLI: {}", err))
+}
+
+fn github_auth_header() -> Option<String> {
+    use base64::{engine::general_purpose, Engine as _};
+    get_configured_or_cli_token().ok().map(|token| {
+        let creds = format!("x-access-token:{}", token);
+        let encoded = general_purpose::STANDARD.encode(creds);
+        format!("Authorization: Basic {}", encoded)
+    })
+}
+
+fn ssh_to_http_url(url: &str) -> Option<String> {
+    let trimmed = url.trim().trim_end_matches('/');
+    if let Some(remainder) = trimmed.strip_prefix("ssh://") {
+        let without_user = remainder
+            .rsplit_once('@')
+            .map_or(remainder, |(_, host)| host);
+        let (host, path) = without_user.split_once('/')?;
+        return Some(format!("https://{}/{}", host, path));
+    }
+
+    if !trimmed.contains("://") {
+        let (authority, path) = trimmed.split_once(':')?;
+        let host = authority
+            .rsplit_once('@')
+            .map_or(authority, |(_, host)| host);
+        if !host.is_empty() && !path.is_empty() {
+            return Some(format!("https://{}/{}", host, path));
+        }
+    }
+
+    None
+}
+
+fn expected_remote_url(auth: &GitAuth) -> String {
+    let base = match &auth.server {
+        GitServer::GitHub => "https://github.com".to_string(),
+        GitServer::GitLab => "https://gitlab.com".to_string(),
+        GitServer::Custom(url) => ssh_to_http_url(url).unwrap_or_else(|| url.to_string()),
+    };
+
+    format!(
+        "{}/{}/{}.git",
+        base.trim_end_matches('/'),
+        auth.user,
+        auth.repo
+    )
+}
+
+fn enforce_checkout_ownership(git_project_path: &PathType) -> Result<(), ErrorArrayItem> {
+    #[cfg(test)]
+    {
+        let _ = git_project_path;
+        Ok(())
+    }
+    #[cfg(not(test))]
+    {
+        use artisan_middleware::users::{get_id, set_file_ownership};
+        let webuser = get_id("www-data")?;
+        set_file_ownership(git_project_path, webuser.0, webuser.1)
+    }
+}
+
+pub async fn sync_configured_repos(credentials: &GitCredentials) -> Result<(), ErrorArrayItem> {
+    let auth_header = github_auth_header();
+
+    for auth in &credentials.auth_items {
+        let repo_id = auth.generate_id().to_string();
+        let project_path = get_repo_path(auth);
+        let dest_path = project_path.to_string_lossy().to_string();
+
+        let repo_url = expected_remote_url(auth);
+
+        // check if checkout exists
+        let exists = project_path.exists();
+
+        if !exists {
+            log!(
+                LogLevel::Info,
+                "{}: checkout missing at {}; cloning from git.cf",
+                repo_id,
+                dest_path
+            );
+
+            let mut cmd = tokio::process::Command::new("git");
+            if let Some(ref header) = auth_header {
+                cmd.arg("-c").arg(format!("http.extraheader={}", header));
+            }
+            cmd.arg("clone")
+               .arg(&repo_url)
+               .arg(&dest_path)
+               .env("GIT_TERMINAL_PROMPT", "0");
+
+            let output = cmd.output().await.map_err(|err| {
+                ErrorArrayItem::new(
+                    Errors::Git,
+                    format!("Failed to spawn git clone for {}: {}", repo_id, err),
+                )
+            })?;
+
+            if !output.status.success() {
+                log!(
+                    LogLevel::Error,
+                    "{}: git clone failed: {}",
+                    repo_id,
+                    String::from_utf8_lossy(&output.stderr)
+                );
+                continue;
+            }
+
+            // checkout the branch
+            let mut cmd = tokio::process::Command::new("git");
+            cmd.arg("-C")
+               .arg(&dest_path)
+               .arg("checkout")
+               .arg(&auth.branch.to_string());
+
+            let output = cmd.output().await.map_err(|err| {
+                ErrorArrayItem::new(
+                    Errors::Git,
+                    format!("Failed to spawn git checkout for {}: {}", repo_id, err),
+                )
+            })?;
+
+            if !output.status.success() {
+                log!(
+                    LogLevel::Error,
+                    "{}: git checkout failed: {}",
+                    repo_id,
+                    String::from_utf8_lossy(&output.stderr)
+                );
+            }
+        } else {
+            // Already exists - let's force pull/sync it to origin branch
+            log!(
+                LogLevel::Info,
+                "{}: checkout ready; force syncing {} to origin/{}",
+                repo_id,
+                dest_path,
+                auth.branch
+            );
+
+            // Fetch origin
+            let mut cmd = tokio::process::Command::new("git");
+            if let Some(ref header) = auth_header {
+                cmd.arg("-c").arg(format!("http.extraheader={}", header));
+            }
+            cmd.arg("-C")
+               .arg(&dest_path)
+               .arg("fetch")
+               .arg("origin")
+               .env("GIT_TERMINAL_PROMPT", "0");
+
+            let output = cmd.output().await.map_err(|err| {
+                ErrorArrayItem::new(
+                    Errors::Git,
+                    format!("Failed to spawn git fetch for {}: {}", repo_id, err),
+                )
+            })?;
+
+            if !output.status.success() {
+                log!(
+                    LogLevel::Error,
+                    "{}: git fetch failed: {}",
+                    repo_id,
+                    String::from_utf8_lossy(&output.stderr)
+                );
+                continue;
+            }
+
+            // Checkout and force reset/clean
+            let branch = auth.branch.to_string();
+            let remote_branch = format!("origin/{}", branch);
+
+            // git checkout -B <branch> <remote_branch>
+            let mut cmd = tokio::process::Command::new("git");
+            cmd.arg("-C")
+               .arg(&dest_path)
+               .arg("checkout")
+               .arg("-B")
+               .arg(&branch)
+               .arg(&remote_branch);
+            let output = cmd.output().await.map_err(|err| {
+                ErrorArrayItem::new(
+                    Errors::Git,
+                    format!("Failed to spawn git checkout for {}: {}", repo_id, err),
+                )
+            })?;
+
+            if !output.status.success() {
+                log!(
+                    LogLevel::Error,
+                    "{}: git checkout failed: {}",
+                    repo_id,
+                    String::from_utf8_lossy(&output.stderr)
+                );
+                continue;
+            }
+
+            // git reset --hard <remote_branch>
+            let mut cmd = tokio::process::Command::new("git");
+            cmd.arg("-C")
+               .arg(&dest_path)
+               .arg("reset")
+               .arg("--hard")
+               .arg(&remote_branch);
+            let output = cmd.output().await.map_err(|err| {
+                ErrorArrayItem::new(
+                    Errors::Git,
+                    format!("Failed to spawn git reset for {}: {}", repo_id, err),
+                )
+            })?;
+
+            if !output.status.success() {
+                log!(
+                    LogLevel::Error,
+                    "{}: git reset failed: {}",
+                    repo_id,
+                    String::from_utf8_lossy(&output.stderr)
+                );
+                continue;
+            }
+
+            // git clean -ffd
+            let mut cmd = tokio::process::Command::new("git");
+            cmd.arg("-C")
+               .arg(&dest_path)
+               .arg("clean")
+               .arg("-ffd");
+            let _ = cmd.output().await;
+        }
+
+        // enforce checkout ownership (chown back to www-data)
+        // Best effort
+        if let Err(err) = enforce_checkout_ownership(&PathType::PathBuf(project_path.clone())) {
+            log!(
+                LogLevel::Warn,
+                "{}: failed to re-assert www-data ownership on '{}': {}",
+                repo_id,
+                dest_path,
+                err.err_mesg
+            );
+        }
+    }
+
+    Ok(())
+}
+
 fn envelope(credentials: &GitCredentials, path: &PathType) -> ReposEnvelope {
     ReposEnvelope {
         schema: SCHEMA_VERSION,
@@ -708,6 +1153,38 @@ fn envelope(credentials: &GitCredentials, path: &PathType) -> ReposEnvelope {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[tokio::test]
+    async fn test_cleanup_stale_repos_removes_unmanaged_paths() {
+        let root = get_repo_root();
+        let _ = fs::remove_dir_all(root);
+        fs::create_dir_all(root).unwrap();
+
+        let active_auth = auth("acme", "widgets", "main");
+        let active_path = get_repo_path(&active_auth);
+        fs::create_dir_all(&active_path).unwrap();
+
+        // Create a stale directory (must be a valid hex-like 8-character string)
+        let stale_path = PathBuf::from(root).join("a1b2c3d4");
+        fs::create_dir_all(&stale_path).unwrap();
+
+        // Create a non-stale directory that is not managed (not hex-like)
+        let non_managed_path = PathBuf::from(root).join("nothex");
+        fs::create_dir_all(&non_managed_path).unwrap();
+
+        let credentials = GitCredentials {
+            auth_items: vec![active_auth],
+        };
+
+        let removed = cleanup_stale_repos(&credentials).unwrap();
+        assert_eq!(removed, 1);
+        assert!(active_path.exists());
+        assert!(!stale_path.exists());
+        assert!(non_managed_path.exists());
+
+        // Cleanup
+        let _ = fs::remove_dir_all(root);
+    }
 
     fn auth(user: &str, repo: &str, branch: &str) -> GitAuth {
         GitAuth {
