@@ -12,3 +12,12 @@ pub mod portal;
 
 // manager data function
 pub mod manager;
+
+// Noise_NK static keys for both simple_comms channels
+pub mod noise;
+
+// The TCP ports this manager dials and binds
+pub mod ports;
+
+// The wire envelope multiplexed over the manager's tunnel to the portal
+pub mod tunnel_wire;

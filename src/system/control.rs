@@ -38,7 +38,6 @@ pub struct PortalState {
     portal_found: bool,
     portal_addrs: Vec<PortalAddr>,
     portal_identy: Option<Identifier>,
-    portal_linked: bool,
     // portal_intime: bool,
 }
 
@@ -48,7 +47,6 @@ impl PortalState {
             portal_found: false,
             portal_addrs: vec![],
             portal_identy: None,
-            portal_linked: false,
             // portal_intime: false, // need a methode of tracking portal comms
         }
     }
@@ -87,19 +85,16 @@ impl PortalState {
         Ok(())
     }
 
+    /// Marks bootstrap as having completed at least once. Write-only today
+    /// (pre-dating this migration) -- kept as a hook for a future status
+    /// surface rather than removed outright, same as `portal_found`/
+    /// `_get_identity` below it.
     pub async fn portal_linked(
         portal_controls: LockWithTimeout<Self>,
     ) -> Result<(), ErrorArrayItem> {
         let mut portal_state_write_lock = portal_controls.try_write().await?;
         portal_state_write_lock.portal_found = true;
         Ok(())
-    }
-
-    pub async fn is_portal_linked(
-        portal_controls: LockWithTimeout<Self>,
-    ) -> Result<bool, ErrorArrayItem> {
-        let portal_state_read_lock = portal_controls.try_read().await?;
-        Ok(portal_state_read_lock.portal_linked.clone())
     }
 }
 

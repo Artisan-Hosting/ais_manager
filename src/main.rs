@@ -14,11 +14,14 @@ use artisan_middleware::{
 };
 use artisan_middleware::{dusa_collection_utils::log, identity::Identifier};
 use network::process_tcp;
+use simple_comms::protocol::handshake::NoiseIdentity;
 use std::{collections::HashMap, sync::Arc, time::Duration};
 use system::{
     config::{generate_state, get_config},
     control::Controls,
-    portal::connect_with_portal,
+    noise::{load_or_create_identity, load_portal_pubkey},
+    portal::maintain_tunnel,
+    ports::DEBUG_LISTENER_ADDR,
     state::{get_state_path, save_state},
 };
 use tokio::{net::TcpListener, time::sleep};
@@ -39,6 +42,22 @@ async fn main() -> Result<(), ErrorArrayItem> {
     if config.debug_mode {
         log!(LogLevel::Debug, "\n{}", state);
     }
+
+    // Noise_NK key material. Loaded once here and shared, so neither the
+    // tunnel supervisor nor an inbound debug connection re-reads it per
+    // connection.
+    //
+    // `identity` authenticates the *local, loopback-only* debug listener
+    // (`network::process_tcp`) -- we are the responder there. `portal_key` is
+    // the portal's, pinned so we can authenticate it as the responder when we
+    // dial the fleet tunnel. See src/system/noise.rs.
+    let identity: Arc<NoiseIdentity> = Arc::new(load_or_create_identity()?);
+    let portal_key: Arc<[u8; 32]> = Arc::new(load_portal_pubkey()?);
+    log!(
+        LogLevel::Info,
+        "Manager debug-listener Noise identity loaded; its public key is {}",
+        hex::encode(identity.public_key())
+    );
 
     {
         if let Err(_) = Identifier::load_from_file() {
@@ -122,22 +141,29 @@ async fn main() -> Result<(), ErrorArrayItem> {
         }
     });
 
-    // Regiser with portal
-    let mut state_clone = state.clone();
+    // The fleet tunnel: one persistent, full-duplex connection to the portal,
+    // carrying registration once and then command traffic indefinitely. See
+    // system::portal for the supervisor/redial logic.
+    let state_clone = state.clone();
+    let application_controls_clone = application_controls.clone();
+    let portal_key_clone = portal_key.clone();
     tokio::spawn(async move {
-        loop {
-            if let Err(err) = connect_with_portal(&mut state_clone).await {
-                log!(LogLevel::Error, "{}", err)
-            }
-
-            sleep(Duration::from_secs(30)).await;
-        }
+        maintain_tunnel(state_clone, application_controls_clone, portal_key_clone).await;
     });
 
-    // Initiating network stack
-    let tcp_listener: TcpListener = TcpListener::bind(format!("0.0.0.0:9800"))
+    // Local, loopback-only debug listener for `ais_manager_debug` (:9825) --
+    // no longer part of the fleet protocol (see src/system/ports.rs and
+    // src/system/noise.rs). Everything the portal does reaches us over the
+    // tunnel above; this exists purely so an operator on the box can drive the
+    // same `command_processor` by hand.
+    let tcp_listener: TcpListener = TcpListener::bind(DEBUG_LISTENER_ADDR)
         .await
         .map_err(|err| ErrorArrayItem::from(err))?;
+    log!(
+        LogLevel::Info,
+        "Local debug listener bound to {} (loopback only)",
+        DEBUG_LISTENER_ADDR
+    );
 
     let state_path_clone = state_path.clone();
     let config_clone = config.clone();
@@ -148,11 +174,12 @@ async fn main() -> Result<(), ErrorArrayItem> {
                 let mut state_clone = state.clone();
                 let state_path_clone = state_path_clone.clone();
                 let config_clone = config_clone.clone();
+                let identity_clone = identity.clone();
 
                 state.event_counter += 1;
                 save_state(&mut state, &state_path_clone).await;
                 tokio::spawn(async move {
-                    if let Err(err) = process_tcp(conn, app_controls, &mut state_clone, &state_path_clone, &config_clone).await {
+                    if let Err(err) = process_tcp(conn, app_controls, &mut state_clone, &state_path_clone, &config_clone, &identity_clone).await {
                         log!(LogLevel::Error, "TCP connection handling panicked: {:?}", err);
                     }
                 });

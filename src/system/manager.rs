@@ -3,8 +3,10 @@ use artisan_middleware::{
         core::{
             errors::{ErrorArrayItem, Errors},
             functions::current_timestamp,
+            logger::LogLevel,
             types::pathtype::PathType,
         },
+        log,
     },
     git_actions::{GitAuth, GitCredentials},
     portal::ManagerData,
@@ -26,19 +28,29 @@ static WATCHDOG_SECURITY_TRIPPED_EVER: Lazy<AtomicBool> = Lazy::new(|| AtomicBoo
 pub async fn get_manager_data(state: &mut AppState) -> Result<ManagerData, ErrorArrayItem> {
     let manager_version = state.version.clone();
 
-    let git_credentials: GitCredentials = if let Some(config) = &state.config.git {
-        let cred_array: Vec<GitAuth> =
-            GitCredentials::new_vec(Some(&PathType::Str(config.credentials_file.clone().into())))
-                .await?;
-        let credentials: GitCredentials = GitCredentials {
-            auth_items: cred_array,
-        };
-        credentials
-    } else {
-        return Err(ErrorArrayItem::new(
-            Errors::ConfigParsing,
-            "Failed to parse the git repos file on the manager",
-        ));
+    let git_credentials: GitCredentials = match &state.config.git {
+        Some(config) => match GitCredentials::new_vec(Some(&PathType::Str(
+            config.credentials_file.clone().into(),
+        )))
+        .await
+        {
+            Ok(auth_items) => GitCredentials { auth_items },
+            Err(err) => {
+                // Watchdog validates runnable apps; missing git credentials should not break
+                // portal queries or registration.
+                log!(
+                    LogLevel::Warn,
+                    "Git credentials unavailable ({}); returning empty git_config",
+                    err
+                );
+                GitCredentials {
+                    auth_items: Vec::<GitAuth>::new(),
+                }
+            }
+        },
+        None => GitCredentials {
+            auth_items: Vec::<GitAuth>::new(),
+        },
     };
 
     let status_array = APP_STATUS_ARRAY.try_read().await?;

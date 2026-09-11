@@ -1,0 +1,1219 @@
+openapi: 3.1.0
+info:
+  title: AIS Manager Upstream Surface
+  version: 0.2.0
+  description: |
+    Describes how Portal/CLI clients talk to the manager over `simple_comms` and how the
+    manager interacts with the local Watchdog gRPC service. The data shapes are taken from
+    `artisan_middleware` and `proto/watchdog.proto`.
+
+    IMPORTANT — this is a description of message *shapes*, not of an HTTP API. There are
+    no REST endpoints here. The paths below are naming conventions for message exchanges;
+    the real transport is bincode-over-`simple_comms` on a TCP connection, or gRPC over a
+    Unix socket for the watchdog calls. See `portal_upstream_api.md` for the authoritative
+    narrative and `portal/docs/fleet_tunnel.md` for the portal's side.
+
+    Both PortalControl and PortalRegistration message groups travel over **one** connection:
+    the fleet tunnel, dialled out by the manager to the portal's `:9800`. Registration runs
+    once at the start of every fresh connection, then command traffic flows in both
+    directions for the rest of that connection's life. They are listed separately here
+    because they are distinct message families, not because they are distinct channels.
+servers:
+  - url: simple-comms+tcp://portal.arhst.net:9800
+    description: >-
+      The fleet tunnel. One persistent, Noise_NK-secured, full-duplex connection per
+      manager, dialled OUT by the manager and accepted by the portal. Carries both the
+      registration bootstrap (PortalMessage) and all command traffic (AppMessage),
+      multiplexed as TunnelMessage. The portal never dials a node.
+  - url: simple-comms+tcp://{host}:9825
+    description: >-
+      The manager's local, loopback-only debug listener for `ais_manager_debug`. Plain
+      request/response, one command per connection, same command semantics as the tunnel.
+      Not part of the fleet protocol and not reachable off-host.
+    variables:
+      host:
+        default: 127.0.0.1
+  - url: grpc+unix://tmp/artisan_watchdog.sock
+    description: Watchdog service (tonic gRPC tunneled over a Unix domain socket)
+tags:
+  - name: PortalControl
+    description: >-
+      Commands and responses. Wrapped as TunnelMessage::App(Correlated<AppMessage>) on the
+      fleet tunnel, where `request_id` pairs a reply with its request; sent bare over the
+      local debug listener, which is strictly one request per connection.
+  - name: PortalRegistration
+    description: >-
+      The PortalMessage bootstrap the manager runs at the start of every fresh tunnel
+      connection, wrapped as TunnelMessage::Bootstrap. Re-run on every reconnect, not only
+      the first ever; RegisterRequest is upsert-safe on the portal side.
+  - name: Watchdog
+    description: gRPC calls that the manager proxies to the watchdog daemon.
+paths:
+  /portal/command:
+    post:
+      tags: [PortalControl]
+      summary: Dispatch an AppMessage::Command
+      operationId: Portal_SendCommand
+      description: |
+        Send `artisan_middleware::aggregator::Command` via `simple_comms`. The manager only
+        accepts the `AppMessage::Command` variant on this channel and responds with either a
+        `CommandResponse` or `ManagerInfo` payload, depending on the command type. Any other
+        `AppMessage` variant is answered with a failed `CommandResponse` rather than closing
+        the connection.
+
+        Executed by `network::command_processor`, which is shared verbatim by the fleet
+        tunnel and the local debug listener.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/PortalCommandRequest'
+      responses:
+        '200':
+          description: Manager response envelope.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/PortalCommandResult'
+      x-transport:
+        framing: simple-comms
+        headerSchema: '#/components/schemas/SimpleCommsHeader'
+        payloadEncoding: bincode<AppMessage::Command>
+  /portal/registration/discover:
+    post:
+      tags: [PortalRegistration]
+      summary: Initiate Portal discovery
+      operationId: Portal_Discover
+      description: |
+        First message on a freshly-established tunnel, sent immediately after the Noise_NK
+        handshake and before any command traffic. Manager sends a `PortalMessage::Discover`
+        and expects `PortalMessage::IdRequest` back.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/PortalDiscoverMessage'
+      responses:
+        '200':
+          description: Portal asks for identity information.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/PortalIdRequestMessage'
+      x-transport:
+        framing: simple-comms
+        payloadEncoding: bincode<PortalMessage>
+  /portal/registration/identity:
+    post:
+      tags: [PortalRegistration]
+      summary: Exchange identity records
+      operationId: Portal_IdentityExchange
+      description: |
+        Manager answers `PortalMessage::IdRequest` with `PortalMessage::IdResponse`, optionally
+        carrying its stored `Identifier`. Portal responds with another `IdResponse` containing the
+        provisioned identity (or `null` to accept the manager's submission).
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/PortalIdResponseMessage'
+      responses:
+        '200':
+          description: Portal completes the identity step.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/PortalIdResponseMessage'
+      x-transport:
+        framing: simple-comms
+        payloadEncoding: bincode<PortalMessage>
+  /portal/registration/register:
+    post:
+      tags: [PortalRegistration]
+      summary: Register manager metadata with Portal
+      operationId: Portal_RegisterManager
+      description: |
+        After the identity exchange, the manager sends `PortalMessage::RegisterRequest` with
+        `ManagerData` — on the SAME connection; there is no reconnect between the steps.
+        Portal verifies the enclosed `Identifier` and replies with `RegisterResponse` (bool)
+        or `Error`. On success the connection moves on to command traffic for the rest of
+        its life.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/ManagerData'
+      responses:
+        '200':
+          description: Registration acknowledgement.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/PortalRegistrationResult'
+      x-transport:
+        framing: simple-comms
+        payloadEncoding: bincode<PortalMessage>
+  /watchdog/ListApplications:
+    post:
+      tags: [Watchdog]
+      summary: List all application statuses tracked by watchdog
+      operationId: Watchdog_ListApplications
+      x-grpc-service: Watchdog
+      requestBody:
+        description: Uses protobuf `Empty`.
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/Empty'
+      responses:
+        '200':
+          description: Array of current `ApplicationStatusMessage`.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ApplicationStatusList'
+  /watchdog/GetApplication:
+    post:
+      tags: [Watchdog]
+      summary: Fetch single application status
+      operationId: Watchdog_GetApplication
+      x-grpc-service: Watchdog
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/ApplicationStatusRequest'
+      responses:
+        '200':
+          description: Presence flag and optional status payload.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ApplicationStatusResponse'
+  /watchdog/GetCurrentLogs:
+    post:
+      tags: [Watchdog]
+      summary: Stream the most recent stdout/stderr lines from watchdog cache
+      operationId: Watchdog_GetCurrentLogs
+      x-grpc-service: Watchdog
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/CurrentLogsRequest'
+      responses:
+        '200':
+          description: Latest log chunk per stream.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/CurrentLogsResponse'
+  /watchdog/QueryHistoricalLogs:
+    post:
+      tags: [Watchdog]
+      summary: Retrieve historical logs with cursor + stream filters
+      operationId: Watchdog_QueryHistoricalLogs
+      x-grpc-service: Watchdog
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/HistoricalLogsRequest'
+      responses:
+        '200':
+          description: Window of historical log entries.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HistoricalLogsResponse'
+  /watchdog/ListBuilds:
+    post:
+      tags: [Watchdog]
+      summary: Enumerate recent build results captured by watchdog
+      operationId: Watchdog_ListBuilds
+      x-grpc-service: Watchdog
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/Empty'
+      responses:
+        '200':
+          description: Build result list.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/BuildStatusList'
+  /watchdog/ListVerifications:
+    post:
+      tags: [Watchdog]
+      summary: List integrity verification entries
+      operationId: Watchdog_ListVerifications
+      x-grpc-service: Watchdog
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/Empty'
+      responses:
+        '200':
+          description: Verification log.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/VerificationEntryList'
+  /watchdog/GetSystemInfo:
+    post:
+      tags: [Watchdog]
+      summary: Get watchdog view of system state
+      operationId: Watchdog_GetSystemInfo
+      x-grpc-service: Watchdog
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/Empty'
+      responses:
+        '200':
+          description: System metadata including identity + tamper state.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/SystemInfo'
+  /watchdog/GetSecurityTripStatus:
+    post:
+      tags: [Watchdog]
+      summary: Check last watchdog security trip indicator
+      operationId: Watchdog_GetSecurityTripStatus
+      x-grpc-service: Watchdog
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/Empty'
+      responses:
+        '200':
+          description: Security trip state summary.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/SecurityTripStatus'
+  /watchdog/GetVersionInfo:
+    post:
+      tags: [Watchdog]
+      summary: Query watchdog + middleware version strings
+      operationId: Watchdog_GetVersionInfo
+      x-grpc-service: Watchdog
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/Empty'
+      responses:
+        '200':
+          description: Version payload.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/VersionInfo'
+  /watchdog/ExecuteCommand:
+    post:
+      tags: [Watchdog]
+      summary: Issue lifecycle/config command directly to watchdog
+      operationId: Watchdog_ExecuteCommand
+      x-grpc-service: Watchdog
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/WatchdogCommandRequest'
+      responses:
+        '200':
+          description: Command acknowledgement from watchdog.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/WatchdogCommandResponse'
+  /watchdog/QueryUsage:
+    post:
+      tags: [Watchdog]
+      summary: Aggregate CPU/memory/network usage over a time window
+      operationId: Watchdog_QueryUsage
+      x-grpc-service: Watchdog
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/UsageQueryRequest'
+      responses:
+        '200':
+          description: Aggregated usage metrics.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/UsageQueryResponse'
+components:
+  schemas:
+    SimpleCommsHeader:
+      type: object
+      description: Big-endian header prefixed to every simple_comms message before the bincode payload.
+      required: [version, flags, payloadLength, reserved, status, originAddress, encryptionKey]
+      properties:
+        version:
+          type: integer
+          format: uint16
+        flags:
+          type: integer
+          format: uint8
+          description: Bitmask (e.g., ENCRYPTED=0x2, COMPRESSED=0x4).
+        payloadLength:
+          type: integer
+          format: uint64
+        reserved:
+          type: integer
+          format: uint8
+        status:
+          type: integer
+          format: uint8
+        originAddress:
+          type: array
+          description: IPv4 bytes that manager/portal use for informational tracing.
+          minItems: 4
+          maxItems: 4
+          items:
+            type: integer
+            format: uint8
+        encryptionKey:
+          type: array
+          description: 32-byte key populated when the ENCRYPTED flag is set.
+          minItems: 32
+          maxItems: 32
+          items:
+            type: integer
+            format: uint8
+    PortalCommandRequest:
+      type: object
+      required: [app_id, command_type, timestamp]
+      properties:
+        app_id:
+          type: string
+          description: Application name (e.g., `ais_manager`, `ais_gitmon`).
+        command_type:
+          $ref: '#/components/schemas/PortalCommandType'
+        timestamp:
+          type: integer
+          format: uint64
+          description: Unix timestamp supplied by the client.
+    PortalCommandType:
+      type: string
+      enum: [Start, Stop, Restart, Status, AllStatus, Info, Custom]
+      description: Allowed command variants (`Custom` carries a custom string in the on-wire structure).
+    PortalCommandResult:
+      description: Envelope returned by manager after executing a command.
+      oneOf:
+        - $ref: '#/components/schemas/PortalCommandResponseEnvelope'
+        - $ref: '#/components/schemas/PortalManagerInfoEnvelope'
+    PortalCommandResponseEnvelope:
+      type: object
+      required: [variant, response]
+      properties:
+        variant:
+          type: string
+          enum: [Response]
+        response:
+          $ref: '#/components/schemas/PortalCommandResponse'
+    PortalManagerInfoEnvelope:
+      type: object
+      required: [variant, manager]
+      properties:
+        variant:
+          type: string
+          enum: [ManagerInfo]
+        manager:
+          $ref: '#/components/schemas/ManagerData'
+    PortalCommandResponse:
+      type: object
+      required: [app_id, command_type, success]
+      properties:
+        app_id:
+          type: string
+        command_type:
+          $ref: '#/components/schemas/PortalCommandType'
+        success:
+          type: boolean
+        message:
+          type: string
+          nullable: true
+          description: |
+            Optional diagnostic or payload string. `Status`/`AllStatus` responses embed JSON-encoded
+            `AppStatus` payloads here, while start/stop/restart carry status text.
+    PortalDiscoverMessage:
+      type: object
+      properties:
+        messageType:
+          type: string
+          const: Discover
+      description: Empty payload used to kick off the Portal handshake.
+    PortalIdRequestMessage:
+      type: object
+      properties:
+        messageType:
+          type: string
+          const: IdRequest
+      description: Portal reply that instructs the manager to send its `Identifier`.
+    PortalIdResponseMessage:
+      type: object
+      required: [messageType]
+      properties:
+        messageType:
+          type: string
+          const: IdResponse
+        identity:
+          $ref: '#/components/schemas/Identifier'
+          nullable: true
+          description: Identifier supplied by the sender (or `null` if requesting Portal to assign one).
+    PortalRegistrationResult:
+      type: object
+      required: [messageType]
+      properties:
+        messageType:
+          type: string
+          enum: [RegisterResponse, Error]
+        accepted:
+          type: boolean
+          description: Present only when `messageType` == `RegisterResponse`.
+          nullable: true
+        error:
+          type: string
+          nullable: true
+          description: Present only when `messageType` == `Error`.
+    ManagerData:
+      type: object
+      required:
+        - identity
+        - version
+        - git_config
+        - hostname
+        - address
+        - system_apps
+        - client_apps
+        - warning
+        - uptime
+      properties:
+        identity:
+          $ref: '#/components/schemas/Identifier'
+        version:
+          $ref: '#/components/schemas/SoftwareVersion'
+        git_config:
+          $ref: '#/components/schemas/GitCredentials'
+        hostname:
+          type: string
+        address:
+          type: string
+          format: ipv4
+        system_apps:
+          type: integer
+          format: uint32
+        client_apps:
+          type: integer
+          format: uint32
+        warning:
+          type: integer
+          format: uint32
+          description: 1 if watchdog ever reported a security trip during this manager lifetime.
+        uptime:
+          type: integer
+          format: uint64
+          description: Seconds since manager boot.
+    Identifier:
+      type: object
+      required: [id, _signature]
+      properties:
+        id:
+          type: integer
+          format: uint64
+        _signature:
+          type: string
+          description: Truncated hash used to verify the identifier.
+    SoftwareVersion:
+      type: object
+      required: [application, library]
+      properties:
+        application:
+          $ref: '#/components/schemas/Version'
+        library:
+          $ref: '#/components/schemas/Version'
+    Version:
+      type: object
+      required: [number, code]
+      properties:
+        number:
+          type: string
+        code:
+          $ref: '#/components/schemas/VersionCode'
+    VersionCode:
+      type: string
+      enum: [Production, ReleaseCandidate, Beta, Alpha, Patched]
+    GitCredentials:
+      type: object
+      required: [auth_items]
+      properties:
+        auth_items:
+          type: array
+          items:
+            $ref: '#/components/schemas/GitAuth'
+    GitAuth:
+      type: object
+      required: [user, repo, branch, server]
+      properties:
+        user:
+          type: string
+        repo:
+          type: string
+        branch:
+          type: string
+        server:
+          $ref: '#/components/schemas/GitServer'
+        token:
+          type: string
+          nullable: true
+    GitServer:
+      type: string
+      enum: [GitHub, GitLab, Custom]
+    AppStatus:
+      type: object
+      required: [app_id, git_id, app_data, timestamp, expected_status]
+      properties:
+        app_id:
+          type: string
+        git_id:
+          type: string
+        app_data:
+          $ref: '#/components/schemas/ApplicationConfig'
+        uptime:
+          type: integer
+          format: uint64
+          nullable: true
+        metrics:
+          $ref: '#/components/schemas/Metrics'
+          nullable: true
+        timestamp:
+          type: integer
+          format: uint64
+        expected_status:
+          $ref: '#/components/schemas/AppLifecycleStatus'
+    AppLifecycleStatus:
+      type: string
+      enum: [Starting, Running, Idle, Stopping, Stopped, Unknown, Warning, Building]
+    ApplicationConfig:
+      type: object
+      required: [state, config]
+      properties:
+        state:
+          $ref: '#/components/schemas/AppState'
+        config:
+          $ref: '#/components/schemas/AppConfig'
+        enviornment:
+          type: object
+          nullable: true
+          description: Environment-specific overrides (serde_json::Value).
+        custom:
+          type: object
+          nullable: true
+          description: User-defined JSON data captured alongside the app state.
+    AppState:
+      type: object
+      required:
+        - name
+        - version
+        - data
+        - status
+        - pid
+        - last_updated
+        - stared_at
+        - event_counter
+        - error_log
+        - config
+        - system_application
+        - stdout
+        - stderr
+      properties:
+        name:
+          type: string
+        version:
+          $ref: '#/components/schemas/SoftwareVersion'
+        data:
+          type: string
+        status:
+          $ref: '#/components/schemas/AppLifecycleStatus'
+        pid:
+          type: integer
+          format: uint32
+        last_updated:
+          type: integer
+          format: uint64
+        stared_at:
+          type: integer
+          format: uint64
+        event_counter:
+          type: integer
+          format: uint32
+        error_log:
+          type: array
+          items:
+            type: object
+            description: Serialized `ErrorArrayItem` from `dusa_collection_utils`.
+        config:
+          $ref: '#/components/schemas/AppConfig'
+        system_application:
+          type: boolean
+        stdout:
+          type: array
+          description: Captured stdout tuples stored as timestamp/text pairs.
+          items:
+            $ref: '#/components/schemas/RuntimeLogEntry'
+        stderr:
+          type: array
+          description: Captured stderr tuples stored as timestamp/text pairs.
+          items:
+            $ref: '#/components/schemas/RuntimeLogEntry'
+    RuntimeLogEntry:
+      type: object
+      required: [timestamp, line]
+      properties:
+        timestamp:
+          type: integer
+          format: uint64
+        line:
+          type: string
+    AppConfig:
+      type: object
+      required:
+        - app_name
+        - max_ram_usage
+        - max_cpu_usage
+        - environment
+        - debug_mode
+        - log_level
+      properties:
+        app_name:
+          type: string
+        max_ram_usage:
+          type: integer
+        max_cpu_usage:
+          type: integer
+        environment:
+          type: string
+        debug_mode:
+          type: boolean
+        log_level:
+          type: string
+        git:
+          $ref: '#/components/schemas/GitConfig'
+          nullable: true
+        database:
+          $ref: '#/components/schemas/DatabaseConfig'
+          nullable: true
+        aggregator:
+          $ref: '#/components/schemas/AggregatorConfig'
+          nullable: true
+    GitConfig:
+      type: object
+      required: [default_server, credentials_file]
+      properties:
+        default_server:
+          $ref: '#/components/schemas/GitServer'
+        credentials_file:
+          type: string
+    DatabaseConfig:
+      type: object
+      required: [url, pool_size]
+      properties:
+        url:
+          type: string
+        pool_size:
+          type: integer
+    AggregatorConfig:
+      type: object
+      required: [socket_path]
+      properties:
+        socket_path:
+          type: string
+        socket_permission:
+          type: integer
+          format: uint32
+          nullable: true
+    Metrics:
+      type: object
+      required: [cpu_usage, memory_usage]
+      properties:
+        cpu_usage:
+          type: number
+          format: float
+        memory_usage:
+          type: number
+          format: double
+        other:
+          $ref: '#/components/schemas/NetworkUsage'
+          nullable: true
+    NetworkUsage:
+      type: object
+      required: [rx_bytes, tx_bytes]
+      properties:
+        rx_bytes:
+          type: integer
+          format: uint64
+        tx_bytes:
+          type: integer
+          format: uint64
+    Empty:
+      type: object
+      description: Protobuf `google.protobuf.Empty` equivalent.
+    StdLogEntry:
+      type: object
+      required: [timestamp, line]
+      properties:
+        timestamp:
+          type: integer
+          format: uint64
+        line:
+          type: string
+    LogStream:
+      type: string
+      enum: [LOG_STREAM_UNSPECIFIED, LOG_STREAM_STDOUT, LOG_STREAM_STDERR, LOG_STREAM_BOTH]
+    NetworkUsageMessage:
+      type: object
+      required: [rxBytes, txBytes]
+      properties:
+        rxBytes:
+          type: integer
+          format: uint64
+        txBytes:
+          type: integer
+          format: uint64
+    ApplicationStatusMessage:
+      type: object
+      required: [name, status, cpuUsage, memoryUsage, lastUpdated, stdout, stderr, networkUsage]
+      properties:
+        name:
+          type: string
+        status:
+          type: string
+        cpuUsage:
+          type: number
+          format: float
+        memoryUsage:
+          type: number
+          format: double
+        pid:
+          type: integer
+          format: uint32
+          nullable: true
+        lastUpdated:
+          type: integer
+          format: uint64
+        stdout:
+          type: array
+          items:
+            $ref: '#/components/schemas/StdLogEntry'
+        stderr:
+          type: array
+          items:
+            $ref: '#/components/schemas/StdLogEntry'
+        networkUsage:
+          $ref: '#/components/schemas/NetworkUsageMessage'
+    ApplicationStatusRequest:
+      type: object
+      required: [name]
+      properties:
+        name:
+          type: string
+    ApplicationStatusResponse:
+      type: object
+      required: [found]
+      properties:
+        found:
+          type: boolean
+        status:
+          $ref: '#/components/schemas/ApplicationStatusMessage'
+          nullable: true
+    ApplicationStatusList:
+      type: object
+      required: [applications]
+      properties:
+        applications:
+          type: array
+          items:
+            $ref: '#/components/schemas/ApplicationStatusMessage'
+    CurrentLogsRequest:
+      type: object
+      required: [application, limit]
+      properties:
+        application:
+          type: string
+        limit:
+          type: integer
+          format: uint32
+    CurrentLogsResponse:
+      type: object
+      required: [found, application, stdout, stderr, lastUpdated]
+      properties:
+        found:
+          type: boolean
+        application:
+          type: string
+        stdout:
+          type: array
+          items:
+            $ref: '#/components/schemas/StdLogEntry'
+        stderr:
+          type: array
+          items:
+            $ref: '#/components/schemas/StdLogEntry'
+        lastUpdated:
+          type: integer
+          format: uint64
+    HistoricalLogsRequest:
+      type: object
+      required: [application, start, end, stream, limit]
+      properties:
+        application:
+          type: string
+        start:
+          type: integer
+          format: uint64
+        end:
+          type: integer
+          format: uint64
+        stream:
+          $ref: '#/components/schemas/LogStream'
+        limit:
+          type: integer
+          format: uint32
+        cursor:
+          type: integer
+          format: uint64
+          nullable: true
+    HistoricalLogRecord:
+      type: object
+      required: [id, application, stream, timestamp, line]
+      properties:
+        id:
+          type: integer
+          format: uint64
+        application:
+          type: string
+        stream:
+          $ref: '#/components/schemas/LogStream'
+        timestamp:
+          type: integer
+          format: uint64
+        line:
+          type: string
+    HistoricalLogsResponse:
+      type: object
+      required: [found, application, start, end, stream, entries, hasMore]
+      properties:
+        found:
+          type: boolean
+        application:
+          type: string
+        start:
+          type: integer
+          format: uint64
+        end:
+          type: integer
+          format: uint64
+        stream:
+          $ref: '#/components/schemas/LogStream'
+        entries:
+          type: array
+          items:
+            $ref: '#/components/schemas/HistoricalLogRecord'
+        nextCursor:
+          type: integer
+          format: uint64
+          nullable: true
+        hasMore:
+          type: boolean
+    UsageQueryRequest:
+      type: object
+      required: [application, start, end]
+      properties:
+        application:
+          type: string
+        start:
+          type: integer
+          format: uint64
+        end:
+          type: integer
+          format: uint64
+    UsageQueryResponse:
+      type: object
+      required: [found, application, start, end, avgCpu, peakMem, totalRx, totalTx, sampleCount, avgMem]
+      properties:
+        found:
+          type: boolean
+        application:
+          type: string
+        start:
+          type: integer
+          format: uint64
+        end:
+          type: integer
+          format: uint64
+        avgCpu:
+          type: number
+          format: double
+        peakMem:
+          type: number
+          format: double
+        totalRx:
+          type: integer
+          format: uint64
+        totalTx:
+          type: integer
+          format: uint64
+        sampleCount:
+          type: integer
+          format: uint64
+        avgMem:
+          type: number
+          format: double
+    BuildResult:
+      type: string
+      enum: [BUILD_RESULT_UNSPECIFIED, BUILD_RESULT_SUCCESS, BUILD_RESULT_FAILURE]
+    BuildStatusMessage:
+      type: object
+      required: [name, result, timestamp, vetted]
+      properties:
+        name:
+          type: string
+        result:
+          $ref: '#/components/schemas/BuildResult'
+        timestamp:
+          type: integer
+          format: uint64
+        vetted:
+          type: boolean
+    BuildStatusList:
+      type: object
+      required: [builds]
+      properties:
+        builds:
+          type: array
+          items:
+            $ref: '#/components/schemas/BuildStatusMessage'
+    VerificationEntryMessage:
+      type: object
+      required: [name, path, expectedHash, calculatedHash, verified, timestamp]
+      properties:
+        name:
+          type: string
+        path:
+          type: string
+        expectedHash:
+          type: string
+        calculatedHash:
+          type: string
+        verified:
+          type: boolean
+        timestamp:
+          type: integer
+          format: uint64
+    VerificationEntryList:
+      type: object
+      required: [entries]
+      properties:
+        entries:
+          type: array
+          items:
+            $ref: '#/components/schemas/VerificationEntryMessage'
+    SystemInfo:
+      type: object
+      required:
+        - identity
+        - systemAppsInitialized
+        - ipAddresses
+        - managerLinked
+        - securityTripped
+      properties:
+        identity:
+          type: string
+        systemAppsInitialized:
+          type: boolean
+        ipAddresses:
+          type: array
+          items:
+            type: string
+        managerLinked:
+          type: boolean
+        securityTripped:
+          type: boolean
+        securityTripDetectedAt:
+          type: integer
+          format: uint64
+          nullable: true
+        securityTripSummary:
+          type: string
+          nullable: true
+    SecurityTripStatus:
+      type: object
+      required: [tripped]
+      properties:
+        tripped:
+          type: boolean
+        detectedAt:
+          type: integer
+          format: uint64
+          nullable: true
+        summary:
+          type: string
+          nullable: true
+    VersionInfo:
+      type: object
+      required: [watchdogVersion, artisanMiddlewareVersion]
+      properties:
+        watchdogVersion:
+          type: string
+        artisanMiddlewareVersion:
+          type: string
+    GetConfigField:
+      type: string
+      enum:
+        - GET_CONFIG_FIELD_UNSPECIFIED
+        - GET_CONFIG_FIELD_BUILD_COMMAND
+        - GET_CONFIG_FIELD_RUN_COMMAND
+        - GET_CONFIG_FIELD_DEPENDENCIES_COMMAND
+        - GET_CONFIG_FIELD_LOG_LEVEL
+        - GET_CONFIG_FIELD_MEMORY_CAP
+        - GET_CONFIG_FIELD_CPU_CAP
+        - GET_CONFIG_FIELD_MONITOR_DIRECTORY
+        - GET_CONFIG_FIELD_WORKING_DIRECTORY
+        - GET_CONFIG_FIELD_CHANGES_NEEDED
+        - GET_CONFIG_FIELD_DIR_SCAN_INTERVAL
+    SetConfigValue:
+      type: object
+      description: oneof carrying exactly one config field to change.
+      properties:
+        buildCommand:
+          type: string
+        runCommand:
+          type: string
+        dependenciesCommand:
+          type: string
+        logLevel:
+          type: string
+        memoryCap:
+          type: integer
+          format: uint32
+        cpuCap:
+          type: integer
+          format: uint32
+        monitorDirectory:
+          type: string
+        workingDirectory:
+          type: string
+        changesNeeded:
+          type: integer
+          format: uint32
+        dirScanInterval:
+          type: integer
+          format: uint32
+      minProperties: 1
+      maxProperties: 1
+    StartCommand:
+      type: object
+      required: [application]
+      properties:
+        application:
+          type: string
+    StopCommand:
+      type: object
+      required: [application]
+      properties:
+        application:
+          type: string
+    ReloadCommand:
+      type: object
+      required: [application]
+      properties:
+        application:
+          type: string
+    RebuildCommand:
+      type: object
+      required: [application]
+      properties:
+        application:
+          type: string
+    StatusCommand:
+      type: object
+      required: [application]
+      properties:
+        application:
+          type: string
+    InfoCommand:
+      type: object
+      description: Empty payload.
+    SetCommand:
+      type: object
+      required: [application, value]
+      properties:
+        application:
+          type: string
+        value:
+          $ref: '#/components/schemas/SetConfigValue'
+    GetCommand:
+      type: object
+      required: [application, field]
+      properties:
+        application:
+          type: string
+        field:
+          $ref: '#/components/schemas/GetConfigField'
+    WatchdogCommandRequest:
+      type: object
+      description: gRPC oneof; send exactly one command payload.
+      properties:
+        start:
+          $ref: '#/components/schemas/StartCommand'
+        stop:
+          $ref: '#/components/schemas/StopCommand'
+        reload:
+          $ref: '#/components/schemas/ReloadCommand'
+        rebuild:
+          $ref: '#/components/schemas/RebuildCommand'
+        status:
+          $ref: '#/components/schemas/StatusCommand'
+        info:
+          $ref: '#/components/schemas/InfoCommand'
+        set:
+          $ref: '#/components/schemas/SetCommand'
+        get:
+          $ref: '#/components/schemas/GetCommand'
+      minProperties: 1
+      maxProperties: 1
+    WatchdogCommandResponse:
+      type: object
+      required: [accepted]
+      properties:
+        accepted:
+          type: boolean
+        message:
+          type: string
+          nullable: true
