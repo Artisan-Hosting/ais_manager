@@ -84,6 +84,7 @@ dependencies = [
  "once_cell",
  "prost",
  "serde",
+ "serde_json",
  "simple_comms",
  "tokio",
  "tonic",

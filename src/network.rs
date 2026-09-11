@@ -250,6 +250,16 @@ pub(crate) async fn command_processor(
                         let mut app = app.clone();
                         app.timestamp = 0;
 
+                        // Truncate stdout and stderr to the latest 20 lines
+                        let stdout_len = app.app_data.state.stdout.len();
+                        if stdout_len > 20 {
+                            app.app_data.state.stdout = app.app_data.state.stdout[stdout_len - 20..].to_vec();
+                        }
+                        let stderr_len = app.app_data.state.stderr.len();
+                        if stderr_len > 20 {
+                            app.app_data.state.stderr = app.app_data.state.stderr[stderr_len - 20..].to_vec();
+                        }
+
                         let response_data = AppMessage::Response(CommandResponse {
                             app_id,
                             command_type: CommandType::Status,
@@ -287,7 +297,19 @@ pub(crate) async fn command_processor(
 
             for (id, status) in store_lock.iter() {
                 log!(LogLevel::Debug, "Sending status of: {}", id);
-                status_vec.push(status.clone().to_json().unwrap());
+                let mut status_clone = status.clone();
+
+                // Truncate stdout and stderr to the latest 20 lines
+                let stdout_len = status_clone.app_data.state.stdout.len();
+                if stdout_len > 20 {
+                    status_clone.app_data.state.stdout = status_clone.app_data.state.stdout[stdout_len - 20..].to_vec();
+                }
+                let stderr_len = status_clone.app_data.state.stderr.len();
+                if stderr_len > 20 {
+                    status_clone.app_data.state.stderr = status_clone.app_data.state.stderr[stderr_len - 20..].to_vec();
+                }
+
+                status_vec.push(status_clone.to_json().unwrap());
             }
 
             status_vec.shrink_to_fit();

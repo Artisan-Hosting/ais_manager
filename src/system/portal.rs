@@ -365,6 +365,108 @@ async fn recv_bootstrap(
     }
 }
 
+async fn stream_logs_over_tunnel(
+    handle: &mut ConnectionHandle<TunnelMessage>,
+    request_id: u64,
+    app_id: &str,
+) -> Result<(), ErrorArrayItem> {
+    let paths = [
+        artisan_middleware::dusa_collection_utils::core::types::pathtype::PathType::Content(format!("/tmp/.{}.state", app_id)),
+        artisan_middleware::dusa_collection_utils::core::types::pathtype::PathType::Content(format!("/opt/artisan/tmp/.{}.state", app_id)),
+    ];
+    
+    let mut state_opt = None;
+    for path in paths {
+        if let Ok(state) = artisan_middleware::state_persistence::StatePersistence::load_state(&path).await {
+            state_opt = Some(state);
+            break;
+        }
+    }
+    
+    let (stdout, stderr) = match state_opt {
+        Some(state) => (state.stdout, state.stderr),
+        None => {
+            let err_reply = ProtocolMessage::new(
+                ConnectionParams::OPTIMIZED,
+                MsgType::Data,
+                TunnelMessage::App(Correlated {
+                    request_id,
+                    body: AppMessage::Response(CommandResponse {
+                        app_id: app_id.to_string().into(),
+                        command_type: CommandType::Custom("StreamLogs".to_string()),
+                        success: false,
+                        message: Some("No log files found for this application".to_string()),
+                    }),
+                }),
+            )?;
+            handle.send(err_reply).await?;
+            return Ok(());
+        }
+    };
+    
+    #[derive(serde::Serialize)]
+    struct LogLine {
+        stream: String,
+        timestamp: u64,
+        line: String,
+    }
+    
+    let mut merged: Vec<LogLine> = Vec::new();
+    for (ts, line) in stdout {
+        merged.push(LogLine {
+            stream: "stdout".to_string(),
+            timestamp: ts,
+            line,
+        });
+    }
+    for (ts, line) in stderr {
+        merged.push(LogLine {
+            stream: "stderr".to_string(),
+            timestamp: ts,
+            line,
+        });
+    }
+    merged.sort_by_key(|item| item.timestamp);
+    
+    let chunk_size = 100;
+    for chunk in merged.chunks(chunk_size) {
+        let chunk_json = serde_json::to_string(&chunk)
+            .map_err(|err| ErrorArrayItem::new(Errors::InvalidHexData, err.to_string()))?;
+            
+        let reply = ProtocolMessage::new(
+            ConnectionParams::OPTIMIZED,
+            MsgType::Data,
+            TunnelMessage::App(Correlated {
+                request_id,
+                body: AppMessage::Response(CommandResponse {
+                    app_id: app_id.to_string().into(),
+                    command_type: CommandType::Custom("LogStreamChunk".to_string()),
+                    success: true,
+                    message: Some(chunk_json),
+                }),
+            }),
+        )?;
+        handle.send(reply).await?;
+    }
+    
+    let term_reply = ProtocolMessage::new(
+        ConnectionParams::OPTIMIZED,
+        MsgType::Data,
+        TunnelMessage::App(Correlated {
+            request_id,
+            body: AppMessage::Response(CommandResponse {
+                app_id: app_id.to_string().into(),
+                command_type: CommandType::Custom("LogStreamEnd".to_string()),
+                success: true,
+                message: None,
+            }),
+        }),
+    )?;
+    handle.send(term_reply).await?;
+    
+    Ok(())
+}
+
 /// The steady-state loop for the rest of a tunnel connection's life: answer
 /// whatever commands the portal pushes, using the same `command_processor`
 /// the local debug listener uses (`crate::network`). Returns once
@@ -392,6 +494,21 @@ async fn run_dispatch_loop(
                 continue;
             }
         };
+
+        let mut is_stream = false;
+        if let AppMessage::Command(ref command) = body {
+            if command.command_type == CommandType::Custom("StreamLogs".to_string()) {
+                is_stream = true;
+                let app_id = command.app_id.to_string();
+                if let Err(err) = stream_logs_over_tunnel(handle, request_id, &app_id).await {
+                    log!(LogLevel::Error, "Failed to stream logs: {}", err);
+                }
+            }
+        }
+
+        if is_stream {
+            continue;
+        }
 
         let response_body = match body {
             AppMessage::Command(command) => {
