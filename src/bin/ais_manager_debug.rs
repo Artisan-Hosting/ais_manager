@@ -66,6 +66,7 @@ COMMANDS:
                                     Get config/override file contents
   set-config <app> <config|overrides> <file.toml> [expected_previous_sha256]
                                     Set config/override file from local file
+  recalculate-allowed-clients       Force recalculate allowed clients in watchdog
 
   Mutating git-repos commands restart ais_gitmon so the change takes effect.
   Pass --no-reload to skip that when batching several edits; restart once at
@@ -165,6 +166,9 @@ fn parse_command(args: &[String], reload: bool) -> Result<(CommandType, String),
         }
         "all-status" => Ok((CommandType::AllStatus, "".to_string())),
         "info" => Ok((CommandType::Info, "".to_string())),
+        "recalculate-allowed-clients" => {
+            Ok((CommandType::Custom("WatchdogRecalculateAllowedClients".to_string()), "".to_string()))
+        }
         "list-expected" => {
             Ok((CommandType::Custom("WatchdogListExpected".to_string()), "".to_string()))
         }

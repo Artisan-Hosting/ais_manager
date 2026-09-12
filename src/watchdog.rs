@@ -170,7 +170,7 @@ pub struct ExpectedAppsJson {
 pub fn handles(verb: &str) -> bool {
     matches!(
         verb,
-        "WatchdogListExpected" | "WatchdogGetConfigFile" | "WatchdogSetConfigFile"
+        "WatchdogListExpected" | "WatchdogGetConfigFile" | "WatchdogSetConfigFile" | "WatchdogRecalculateAllowedClients"
     )
 }
 
@@ -205,6 +205,15 @@ fn failure(verb: &str, message: String) -> AppMessage {
 
 async fn run(verb: &str, body: &str) -> Result<String, String> {
     match verb {
+        "WatchdogRecalculateAllowedClients" => {
+            let res = recalculate_allowed_clients().await
+                .map_err(|err| err.err_mesg.to_string())?;
+            let json = serde_json::json!({
+                "accepted": res.accepted,
+                "message": res.message,
+            });
+            serde_json::to_string(&json).map_err(|err| format!("JSON serialization error: {}", err))
+        }
         "WatchdogListExpected" => {
             let res = list_expected_apps().await
                 .map_err(|err| err.err_mesg.to_string())?;
@@ -309,6 +318,17 @@ pub async fn set_config_file(
         .set_config_file(Request::new(request))
         .await
         .map_err(|err| grpc_error(format!("Watchdog SetConfigFile failed: {}", err)))?
+        .into_inner();
+
+    Ok(response)
+}
+
+pub async fn recalculate_allowed_clients() -> Result<proto::CommandResponse, ErrorArrayItem> {
+    let mut client = watchdog_client().await?;
+    let response = client
+        .recalculate_allowed_clients(Request::new(proto::Empty {}))
+        .await
+        .map_err(|err| grpc_error(format!("Watchdog RecalculateAllowedClients failed: {}", err)))?
         .into_inner();
 
     Ok(response)

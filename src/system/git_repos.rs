@@ -649,6 +649,16 @@ async fn run(verb: &str, body: &str, config: &AppConfig) -> Result<ReposResponse
         );
     }
 
+    // Recalculate allowed clients in watchdog
+    // Best effort
+    if let Err(err) = crate::watchdog::recalculate_allowed_clients().await {
+        log!(
+            LogLevel::Error,
+            "Failed to recalculate allowed clients in watchdog: {}",
+            err.err_mesg
+        );
+    }
+
     Ok(ReposResponse {
         envelope: envelope(&credentials, &path),
         reload: apply(reload).await,

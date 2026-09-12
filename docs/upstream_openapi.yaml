@@ -177,6 +177,7 @@ paths:
             Returns the file's path, content, found/created booleans, and a SHA-256 digest of the content.
           - `WatchdogSetConfigFile` — `{"application": "ais_gitmon", "kind": "config", "content": "...", "expected_previous_sha256": "..."}`.
             Writes the file atomically, updates integrity baselines, and returns accepted status.
+          - `WatchdogRecalculateAllowedClients` — no body. Triggers security/client allowed client recalculation on watchdog.
       requestBody:
         required: true
         content:
