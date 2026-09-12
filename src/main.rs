@@ -108,6 +108,42 @@ async fn main() -> Result<(), ErrorArrayItem> {
         }
     });
 
+    // Periodically re-run the same force-resync/force-clean/state-file-purge
+    // logic `GitReposAudit` exposes on demand (see system::git_repos::run_audit),
+    // so a node's checkouts and /opt/artisan/tmp state files self-heal even if
+    // nobody ever clicks the portal's "Recent Repositories" button. An hour is
+    // deliberately not aggressive: this does real git network traffic against
+    // every configured repo, and a write already triggers the same sync/clean
+    // as a side effect, so this periodic pass is a safety net for drift
+    // between edits, not the primary mechanism.
+    let audit_config = config.clone();
+    tokio::spawn(async move {
+        loop {
+            sleep(Duration::from_secs(3600)).await;
+            match crate::system::git_repos::run_audit(&audit_config).await {
+                Ok(outcome) if !outcome.errors.is_empty() => {
+                    log!(
+                        LogLevel::Warn,
+                        "Periodic git repo audit finished with errors: {:?}",
+                        outcome.errors
+                    );
+                }
+                Ok(outcome) => {
+                    log!(
+                        LogLevel::Debug,
+                        "Periodic git repo audit: {} repo(s) considered, {} stale checkout(s) removed, {} stale state file(s) removed",
+                        outcome.repos_considered,
+                        outcome.stale_checkouts_removed,
+                        outcome.stale_state_files_removed
+                    );
+                }
+                Err(err) => {
+                    log!(LogLevel::Warn, "Periodic git repo audit failed: {}", err);
+                }
+            }
+        }
+    });
+
     // Keep the watchdog connection marker fresh for watchdog `manager_linked` detection.
     let state_path_for_watchdog = state_path.clone();
     tokio::spawn(async move {

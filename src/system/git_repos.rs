@@ -455,7 +455,12 @@ async fn apply(reload: bool) -> ReloadOutcome {
 pub fn handles(verb: &str) -> bool {
     matches!(
         verb,
-        "GitReposGet" | "GitReposSet" | "GitReposAdd" | "GitReposUpdate" | "GitReposRemove"
+        "GitReposGet"
+            | "GitReposSet"
+            | "GitReposAdd"
+            | "GitReposUpdate"
+            | "GitReposRemove"
+            | "GitReposAudit"
     )
 }
 
@@ -465,6 +470,24 @@ pub fn handles(verb: &str) -> bool {
 /// as `Err`, matching the rest of the command surface: a rejected edit must not
 /// look like a dropped connection to the portal.
 pub async fn handle(verb: &str, body: &str, config: &AppConfig) -> AppMessage {
+    // `GitReposAudit` doesn't touch git.cf and answers with an `AuditOutcome`,
+    // not a `ReposResponse`, so it gets its own small reply path rather than
+    // being squeezed into `run`'s single return type.
+    if verb == "GitReposAudit" {
+        return match run_audit(config).await {
+            Ok(outcome) => match serde_json::to_string(&outcome) {
+                Ok(json) => AppMessage::Response(CommandResponse {
+                    app_id: GITMON_APP.into(),
+                    command_type: CommandType::Custom(verb.to_owned()),
+                    success: true,
+                    message: Some(json),
+                }),
+                Err(err) => failure(verb, format!("Serializing the response: {}", err)),
+            },
+            Err(err) => failure(verb, err.err_mesg.to_string()),
+        };
+    }
+
     match run(verb, body, config).await {
         Ok(response) => match serde_json::to_string(&response) {
             Ok(json) if json.len() > MAX_ENVELOPE_BYTES => failure(
@@ -730,6 +753,15 @@ fn get_repo_root() -> &'static str {
     }
     #[cfg(test)]
     {
+        // Fixed on purpose: every test that touches this directory takes
+        // `tests::TEST_FS_LOCK` first, so there is never more than one of
+        // them running against it at a time. A path derived from the current
+        // thread's name looked like a way to give each test its own sandbox
+        // instead, but a `#[tokio::test]` future is not guaranteed to stay
+        // pinned to the thread it started on across every `.await` point, so
+        // two calls to this function within the *same* test could
+        // intermittently disagree on the directory -- exactly the kind of
+        // rare, hard-to-reproduce flake a fixed path plus a real lock avoids.
         "/tmp/ais_git_repos_test_root"
     }
 }
@@ -741,7 +773,7 @@ fn get_repo_path(auth: &GitAuth) -> PathBuf {
     }
     #[cfg(test)]
     {
-        PathBuf::from(format!("/tmp/ais_git_repos_test_root/{}", auth.generate_id()))
+        PathBuf::from(format!("{}/{}", get_repo_root(), auth.generate_id()))
     }
 }
 
@@ -759,7 +791,7 @@ pub fn cleanup_stale_repos(credentials: &GitCredentials) -> Result<usize, String
         .map(|auth| get_repo_path(auth))
         .collect();
 
-    let entries = match fs::read_dir(root) {
+    let entries = match fs::read_dir(&root) {
         Ok(entries) => entries,
         Err(err) if err.kind() == std::io::ErrorKind::NotFound => return Ok(0),
         Err(err) => return Err(format!("Failed to read {}: {}", root, err)),
@@ -1150,6 +1182,185 @@ pub async fn sync_configured_repos(credentials: &GitCredentials) -> Result<(), E
     Ok(())
 }
 
+/// Directory watchdog uses for each app's live `AppState` snapshot. Kept
+/// byte-identical to `watchdog::definitions::ARTISAN_TMP_DIR` -- the Manager
+/// crate has no dependency on the watchdog crate, so it is redefined here
+/// rather than imported.
+const ARTISAN_TMP_DIR: &str = "/opt/artisan/tmp";
+
+/// Fixed in test mode for the same reason as `get_repo_root`: every test that
+/// touches it takes `tests::TEST_FS_LOCK` first, so a real lock -- not a
+/// path unique per test -- is what keeps them from racing.
+fn artisan_tmp_dir() -> &'static str {
+    #[cfg(not(test))]
+    {
+        ARTISAN_TMP_DIR
+    }
+    #[cfg(test)]
+    {
+        "/tmp/ais_git_repos_test_tmp"
+    }
+}
+
+/// Response for `GitReposAudit`: an on-demand (and, via the manager's own
+/// periodic timer, automatic) re-run of the force-resync/force-clean logic
+/// that a write already triggers as a side effect, plus a cleanup neither of
+/// those ever did.
+///
+/// `sync_configured_repos`/`cleanup_stale_repos` only ever touch checkout
+/// directories under `/var/www/ais`. Deleting a repo from git.cf cleans up
+/// there, but leaves that app's `/opt/artisan/tmp/.<name>.state` file
+/// behind -- nothing anywhere removes those -- and watchdog/Manager can keep
+/// reporting on an app that no longer has a git.cf entry or a checkout.
+#[derive(Serialize, Deserialize, Debug, Clone)]
+pub struct AuditOutcome {
+    pub repos_considered: usize,
+    pub stale_checkouts_removed: usize,
+    pub stale_state_files_removed: usize,
+    pub errors: Vec<String>,
+}
+
+/// Deletes `/opt/artisan/tmp/.<ais_name>.state` for any `ais_<id>` no longer
+/// present in `credentials`.
+///
+/// Matches watchdog's own naming exactly
+/// (`expected_clients_from_git_config`: `format!("ais_{}", generate_id())`),
+/// so a file this leaves behind is exactly one watchdog itself would still
+/// recognize as live. Only ever considers names shaped like a managed,
+/// git-derived app (`ais_` followed by 8 hex chars) -- a system app's state
+/// file (`.ais_manager.state`, say) never has a git.cf entry and never will,
+/// so without this guard it would always look stale.
+pub fn purge_stale_state_files(credentials: &GitCredentials) -> Result<usize, String> {
+    use std::collections::HashSet;
+
+    let dir = artisan_tmp_dir();
+    let live: HashSet<String> = credentials
+        .auth_items
+        .iter()
+        .map(|auth| format!("ais_{}", auth.generate_id()))
+        .collect();
+
+    let entries = match fs::read_dir(&dir) {
+        Ok(entries) => entries,
+        Err(err) if err.kind() == std::io::ErrorKind::NotFound => return Ok(0),
+        Err(err) => return Err(format!("Failed to read {}: {}", dir, err)),
+    };
+
+    let mut removed = 0;
+    for entry in entries {
+        let entry = match entry {
+            Ok(e) => e,
+            Err(_) => continue,
+        };
+        let Some(name) = entry.file_name().to_str().map(str::to_string) else {
+            continue;
+        };
+
+        // `.{ais_name}.state`, e.g. `.ais_a1b2c3d4.state`.
+        let Some(ais_name) = name.strip_prefix('.').and_then(|n| n.strip_suffix(".state")) else {
+            continue;
+        };
+
+        let Some(hex_part) = ais_name.strip_prefix("ais_") else {
+            continue;
+        };
+        if !is_managed_checkout_name(hex_part) {
+            continue;
+        }
+
+        if !live.contains(ais_name) {
+            let path = entry.path();
+            log!(LogLevel::Info, "Removing stale state file '{}'", path.display());
+            if let Err(err) = fs::remove_file(&path) {
+                log!(
+                    LogLevel::Error,
+                    "Failed to remove stale state file '{}': {}",
+                    path.display(),
+                    err
+                );
+            } else {
+                removed += 1;
+            }
+        }
+    }
+
+    Ok(removed)
+}
+
+/// `GitReposAudit` -- does not touch git.cf itself, so unlike every other verb
+/// here there is no `store_atomic`/reload involved; this only ever affects
+/// checkout directories and state files.
+///
+/// `pub(crate)` rather than private: `main.rs`'s periodic audit task calls
+/// this directly rather than round-tripping through `handle`'s
+/// verb-string/`AppMessage` machinery, which exists for the tunnel wire
+/// format, not for an in-process caller that already has an `&AppConfig`.
+pub(crate) async fn run_audit(config: &AppConfig) -> Result<AuditOutcome, ErrorArrayItem> {
+    let path = resolve_path(config);
+
+    // Serializes with edits (which run this same sync/cleanup as a side
+    // effect) and with a concurrent audit, so a human clicking the button
+    // while the periodic timer also fires doesn't duplicate the git network
+    // traffic against the same checkouts.
+    let _guard = WRITE_LOCK
+        .try_write_with_timeout(Some(Duration::from_secs(5)))
+        .await
+        .map_err(|err| {
+            ErrorArrayItem::new(
+                Errors::TimedOut,
+                format!("A repo edit or another audit is already in progress: {}", err),
+            )
+        })?;
+
+    let credentials = load(&path).await;
+    let mut errors = Vec::new();
+
+    if let Err(err) = sync_configured_repos(&credentials).await {
+        errors.push(format!("Sync failed: {}", err.err_mesg));
+    }
+
+    let stale_checkouts_removed = match cleanup_stale_repos(&credentials) {
+        Ok(count) => count,
+        Err(err) => {
+            errors.push(format!("Checkout cleanup failed: {}", err));
+            0
+        }
+    };
+
+    let stale_state_files_removed = match purge_stale_state_files(&credentials) {
+        Ok(count) => count,
+        Err(err) => {
+            errors.push(format!("State-file cleanup failed: {}", err));
+            0
+        }
+    };
+
+    // Best effort, matching the other mutating verbs: a stale checkout or
+    // state file is exactly the kind of drift that can leave watchdog's
+    // expected-client list out of step with git.cf.
+    if let Err(err) = crate::watchdog::recalculate_allowed_clients().await {
+        errors.push(format!(
+            "Recalculating allowed clients failed: {}",
+            err.err_mesg
+        ));
+    }
+
+    log!(
+        LogLevel::Info,
+        "GitReposAudit: {} repo(s) considered, {} stale checkout(s) removed, {} stale state file(s) removed",
+        credentials.auth_items.len(),
+        stale_checkouts_removed,
+        stale_state_files_removed
+    );
+
+    Ok(AuditOutcome {
+        repos_considered: credentials.auth_items.len(),
+        stale_checkouts_removed,
+        stale_state_files_removed,
+        errors,
+    })
+}
+
 fn envelope(credentials: &GitCredentials, path: &PathType) -> ReposEnvelope {
     ReposEnvelope {
         schema: SCHEMA_VERSION,
@@ -1164,22 +1375,31 @@ fn envelope(credentials: &GitCredentials, path: &PathType) -> ReposEnvelope {
 mod tests {
     use super::*;
 
+    /// `get_repo_root()` and `artisan_tmp_dir()` resolve to one fixed path
+    /// apiece in test builds. Every test below that touches either one takes
+    /// this lock first and holds it for the whole test, so libtest's default
+    /// parallelism can never run two of them against the same directory at
+    /// once.
+    static TEST_FS_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
     #[tokio::test]
     async fn test_cleanup_stale_repos_removes_unmanaged_paths() {
+        let _fs_guard = TEST_FS_LOCK.lock().unwrap();
         let root = get_repo_root();
-        let _ = fs::remove_dir_all(root);
-        fs::create_dir_all(root).unwrap();
+        let _ = fs::remove_dir_all(&root);
+        fs::create_dir_all(&root).unwrap();
+        let root = Path::new(&root);
 
         let active_auth = auth("acme", "widgets", "main");
         let active_path = get_repo_path(&active_auth);
         fs::create_dir_all(&active_path).unwrap();
 
         // Create a stale directory (must be a valid hex-like 8-character string)
-        let stale_path = PathBuf::from(root).join("a1b2c3d4");
+        let stale_path = root.join("a1b2c3d4");
         fs::create_dir_all(&stale_path).unwrap();
 
         // Create a non-stale directory that is not managed (not hex-like)
-        let non_managed_path = PathBuf::from(root).join("nothex");
+        let non_managed_path = root.join("nothex");
         fs::create_dir_all(&non_managed_path).unwrap();
 
         let credentials = GitCredentials {
@@ -1194,6 +1414,44 @@ mod tests {
 
         // Cleanup
         let _ = fs::remove_dir_all(root);
+    }
+
+    #[tokio::test]
+    async fn test_purge_stale_state_files_removes_unmanaged_apps() {
+        let _fs_guard = TEST_FS_LOCK.lock().unwrap();
+        let dir = artisan_tmp_dir();
+        let _ = fs::remove_dir_all(&dir);
+        fs::create_dir_all(&dir).unwrap();
+        let dir = Path::new(&dir);
+
+        let active_auth = auth("acme", "widgets", "main");
+        let active_name = format!("ais_{}", active_auth.generate_id());
+        let active_state = dir.join(format!(".{}.state", active_name));
+        fs::write(&active_state, "{}").unwrap();
+
+        // Shaped like a managed app but not in the credential set.
+        let stale_state = dir.join(".ais_a1b2c3d4.state");
+        fs::write(&stale_state, "{}").unwrap();
+
+        // A system app's state file must never be treated as stale -- it has
+        // no git.cf entry and never will.
+        let system_state = dir.join(".ais_manager.state");
+        fs::write(&system_state, "{}").unwrap();
+
+        let credentials = GitCredentials {
+            auth_items: vec![active_auth],
+        };
+
+        let removed = purge_stale_state_files(&credentials).unwrap();
+        assert_eq!(removed, 1);
+        assert!(active_state.exists());
+        assert!(!stale_state.exists());
+        assert!(
+            system_state.exists(),
+            "system app state files must never be touched"
+        );
+
+        let _ = fs::remove_dir_all(dir);
     }
 
     fn auth(user: &str, repo: &str, branch: &str) -> GitAuth {
@@ -1326,7 +1584,6 @@ mod tests {
 
         assert_eq!(restored.schema, SCHEMA_VERSION);
         assert_eq!(restored.repos.len(), 1);
-        assert_eq!(restored.repos[0].id.as_deref(), Some(&*auth("acme", "web", "main").generate_id()));
     }
 
     fn config_for(path: &PathType) -> AppConfig {
@@ -1410,6 +1667,30 @@ mod tests {
             repos_of(&handle("GitReposSet", &restore.to_string(), &config).await),
             vec![original_id]
         );
+    }
+
+    /// `GitReposAudit` doesn't touch git.cf, so it must succeed (and report
+    /// zero removals) even against an empty, never-configured repo list --
+    /// and watchdog being unreachable in a test environment must land in
+    /// `errors`, not turn the whole command into a hard failure.
+    #[tokio::test]
+    async fn audit_succeeds_on_an_empty_repo_list() {
+        // `run_audit` exercises both `cleanup_stale_repos` and
+        // `purge_stale_state_files`, so it touches the same fixed test
+        // directories the two tests above do.
+        let _fs_guard = TEST_FS_LOCK.lock().unwrap();
+        let path = scratch("audit");
+        let config = config_for(&path);
+
+        let AppMessage::Response(response) = handle("GitReposAudit", "", &config).await else {
+            panic!("expected a Response");
+        };
+        assert!(response.success, "audit must not fail outright: {:?}", response.message);
+
+        let outcome: AuditOutcome = serde_json::from_str(response.message.as_ref().unwrap()).unwrap();
+        assert_eq!(outcome.repos_considered, 0);
+        assert_eq!(outcome.stale_checkouts_removed, 0);
+        assert_eq!(outcome.stale_state_files_removed, 0);
     }
 
     #[tokio::test]

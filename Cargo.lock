@@ -118,8 +118,6 @@ checksum = "7f202df86484c868dbad7eaa557ef785d5c66295e41b460ef922eca0723b842c"
 [[package]]
 name = "artisan_middleware"
 version = "5.7.1"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "17480a831ea6ff110829c49813de42e34158be96c6818a69bb5b048607654733"
 dependencies = [
  "aes-gcm",
  "base64 0.22.1",
