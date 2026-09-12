@@ -61,6 +61,11 @@ COMMANDS:
   git-repos add <file.json>         Add one repo
   git-repos update <id> <file.json> Replace the repo with that id
   git-repos remove <id>             Delete the repo with that id
+  list-expected                     List expected apps from watchdog
+  get-config <app> <config|overrides> [create_if_missing]
+                                    Get config/override file contents
+  set-config <app> <config|overrides> <file.toml> [expected_previous_sha256]
+                                    Set config/override file from local file
 
   Mutating git-repos commands restart ais_gitmon so the change takes effect.
   Pass --no-reload to skip that when batching several edits; restart once at
@@ -160,6 +165,48 @@ fn parse_command(args: &[String], reload: bool) -> Result<(CommandType, String),
         }
         "all-status" => Ok((CommandType::AllStatus, "".to_string())),
         "info" => Ok((CommandType::Info, "".to_string())),
+        "list-expected" => {
+            Ok((CommandType::Custom("WatchdogListExpected".to_string()), "".to_string()))
+        }
+        "get-config" => {
+            let Some(app) = args.get(1) else {
+                return Err("get-config requires <app>".to_string());
+            };
+            let Some(kind) = args.get(2) else {
+                return Err("get-config requires <config|overrides>".to_string());
+            };
+            let create_if_missing = args.get(3).map(|s| s == "true" || s == "create_if_missing").unwrap_or(false);
+
+            let payload = serde_json::json!({
+                "application": app,
+                "kind": kind,
+                "create_if_missing": create_if_missing,
+            });
+            Ok((CommandType::Custom(format!("WatchdogGetConfigFile {payload}")), "".to_string()))
+        }
+        "set-config" => {
+            let Some(app) = args.get(1) else {
+                return Err("set-config requires <app>".to_string());
+            };
+            let Some(kind) = args.get(2) else {
+                return Err("set-config requires <config|overrides>".to_string());
+            };
+            let Some(file_path) = args.get(3) else {
+                return Err("set-config requires <file.toml>".to_string());
+            };
+            let expected_previous_sha256 = args.get(4).cloned().unwrap_or_default();
+
+            let content = std::fs::read_to_string(file_path)
+                .map_err(|err| format!("Reading {file_path}: {err}"))?;
+
+            let payload = serde_json::json!({
+                "application": app,
+                "kind": kind,
+                "content": content,
+                "expected_previous_sha256": expected_previous_sha256,
+            });
+            Ok((CommandType::Custom(format!("WatchdogSetConfigFile {payload}")), "".to_string()))
+        }
         // The manager reads these as `Custom("<Verb> <json>")` -- the JSON body
         // has to ride inside the verb string because `Command` has no field for
         // one. `app_id` is unused for them, hence the empty string.

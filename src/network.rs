@@ -351,6 +351,10 @@ pub(crate) async fn command_processor(
                 return Ok(crate::system::git_repos::handle(verb, body, &state.config).await);
             }
 
+            if crate::watchdog::handles(verb) {
+                return Ok(crate::watchdog::handle(verb, body).await);
+            }
+
             return Ok(AppMessage::Response(CommandResponse {
                 app_id,
                 command_type: CommandType::Custom("command not found".to_string()),

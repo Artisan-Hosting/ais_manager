@@ -157,6 +157,53 @@ paths:
         framing: simple-comms
         headerSchema: '#/components/schemas/SimpleCommsHeader'
         payloadEncoding: bincode<AppMessage::Command>
+  /portal/command/watchdog-config:
+    post:
+      tags: [PortalControl]
+      summary: Read or edit watchdog application config/override files
+      operationId: Portal_WatchdogConfig
+      description: |
+        Allows reading, writing, and creating Config.toml or Overrides.toml configuration files
+        for client and system applications directly via the fleet tunnel.
+
+        Not a distinct message: these are `AppMessage::Command` with
+        `command_type: Custom("<Verb> <json>")`, executed by `network::command_processor`
+        like every other command.
+
+        Verbs:
+          - `WatchdogListExpected` — no body. Returns ExpectedAppsList: all expected client
+            and system app IDs, plus which ones have valid configs on disk.
+          - `WatchdogGetConfigFile` — `{"application": "ais_gitmon", "kind": "config", "create_if_missing": false}`.
+            Returns the file's path, content, found/created booleans, and a SHA-256 digest of the content.
+          - `WatchdogSetConfigFile` — `{"application": "ais_gitmon", "kind": "config", "content": "...", "expected_previous_sha256": "..."}`.
+            Writes the file atomically, updates integrity baselines, and returns accepted status.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/PortalCommandRequest'
+            examples:
+              get_config:
+                summary: Read an app config file
+                value:
+                  app_id: ""
+                  command_type:
+                    Custom: >-
+                      WatchdogGetConfigFile {"application":"ais_gitmon","kind":"config",
+                      "create_if_missing":false}
+                  timestamp: 1757606400
+      responses:
+        '200':
+          description: A `CommandResponse` containing the JSON payload representing the config state.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/PortalCommandResult'
+      x-transport:
+        framing: simple-comms
+        headerSchema: '#/components/schemas/SimpleCommsHeader'
+        payloadEncoding: bincode<AppMessage::Command>
   /portal/registration/discover:
     post:
       tags: [PortalRegistration]
