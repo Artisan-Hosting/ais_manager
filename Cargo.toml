@@ -21,8 +21,7 @@ required-features = ["debug-cli"]
 
 [dependencies]
 #artisan_middleware = { git = "https://github.com/Artisan-Hosting/artisan_lib.git", branch = "stable" }
-#artisan_middleware = {path = "/opt/artisan/lib/artisan_lib"}
-artisan_middleware =  "^5.7.1"
+artisan_middleware = {path = "/opt/artisan/lib/artisan_lib"}
 base64 = "0.22.1"
 colored = "3.0.0"
 gethostname = "1.0.0"
