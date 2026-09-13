@@ -200,6 +200,22 @@ async fn main() -> Result<(), ErrorArrayItem> {
                     }
                 };
 
+                // Never push an empty result down. Secret-server returning
+                // nothing is indistinguishable here from "not seeded yet" --
+                // watchdog's own migration is supposed to seed it the first
+                // time a legacy local .env file is found (see
+                // `runtime_bundle_lifecycle::migrate_app_to_bundle`), but if
+                // that seed hasn't landed yet (or ever failed), pushing empty
+                // content down would silently wipe out real secrets a bundle
+                // already has. The cost: a deliberate "delete the app's last
+                // secret" via Portal won't propagate through this periodic
+                // loop alone -- that needs the immediate on-edit push E10
+                // describes, not yet built, to ever send an explicit empty
+                // update.
+                if content.is_empty() {
+                    continue;
+                }
+
                 if let Err(err) = crate::watchdog::set_bundle_env(&application, &content).await {
                     log!(
                         LogLevel::Warn,
