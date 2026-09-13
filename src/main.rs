@@ -200,19 +200,48 @@ async fn main() -> Result<(), ErrorArrayItem> {
                     }
                 };
 
-                // Never push an empty result down. Secret-server returning
-                // nothing is indistinguishable here from "not seeded yet" --
-                // watchdog's own migration is supposed to seed it the first
-                // time a legacy local .env file is found (see
-                // `runtime_bundle_lifecycle::migrate_app_to_bundle`), but if
-                // that seed hasn't landed yet (or ever failed), pushing empty
-                // content down would silently wipe out real secrets a bundle
-                // already has. The cost: a deliberate "delete the app's last
-                // secret" via Portal won't propagate through this periodic
-                // loop alone -- that needs the immediate on-edit push E10
-                // describes, not yet built, to ever send an explicit empty
-                // update.
                 if content.is_empty() {
+                    // Secret-server has nothing on record. That's
+                    // indistinguishable here from "not seeded yet" -- either
+                    // this app's migration never found a legacy .env to seed
+                    // from (nothing to do), or its bundle was already built
+                    // before that seeding existed and genuinely has real
+                    // content secret-server has never seen (watchdog's own
+                    // seed-on-migration only ever runs once, at first bundle
+                    // build). Check the bundle directly and backfill from it
+                    // rather than blindly pushing empty content down, which
+                    // would otherwise wipe out exactly that real content the
+                    // moment this loop next ran.
+                    match crate::watchdog::get_bundle_env(&application).await {
+                        Ok(Some(bundle_content)) => {
+                            if let Err(err) = client
+                                .seed_from_env_lines(&bare_id, &environment, &bundle_content)
+                                .await
+                            {
+                                log!(
+                                    LogLevel::Warn,
+                                    "Secrets sync: backfilling secret-server from {}'s bundle failed: {}",
+                                    application,
+                                    err
+                                );
+                            } else {
+                                log!(
+                                    LogLevel::Info,
+                                    "Secrets sync: backfilled secret-server from {}'s existing bundle (no fleet-wide record existed yet)",
+                                    application
+                                );
+                            }
+                        }
+                        Ok(None) => {} // bundle has nothing either; genuinely no secrets to sync
+                        Err(err) => {
+                            log!(
+                                LogLevel::Warn,
+                                "Secrets sync: reading {}'s bundle env failed: {}",
+                                application,
+                                err
+                            );
+                        }
+                    }
                     continue;
                 }
 

@@ -363,6 +363,21 @@ pub async fn get_app_environment(application: &str) -> Result<Option<String>, Er
     Ok(Some(parsed.environment))
 }
 
+/// Reads back an app's bundle env content as watchdog currently has it,
+/// without going through secret-server at all. Used by the secrets-sync loop
+/// to backfill secret-server when it comes back empty for an app whose
+/// bundle was already built (and possibly already seeded from a legacy local
+/// `.env`) before that seed-on-migration path existed. `Ok(None)` covers both
+/// "no bundle yet" and "bundle exists but its env content is empty" -- either
+/// way, there's nothing here worth pushing up.
+pub async fn get_bundle_env(application: &str) -> Result<Option<String>, ErrorArrayItem> {
+    let res = get_config_file(application, proto::ConfigFileKind::BundleEnv as i32, false).await?;
+    if !res.found || res.content.trim().is_empty() {
+        return Ok(None);
+    }
+    Ok(Some(res.content))
+}
+
 pub async fn recalculate_allowed_clients() -> Result<proto::CommandResponse, ErrorArrayItem> {
     let mut client = watchdog_client().await?;
     let response = client

@@ -3,15 +3,21 @@
 //! to watchdog to fold into that app's runtime bundle (via the existing
 //! `SetConfigFile{kind: BUNDLE_ENV}` RPC, see `crate::watchdog::set_bundle_env`).
 //!
-//! Portal and the dashboard's "Secrets" page continue to read and write
-//! these same secrets directly against `ais_secretserver`, unchanged -- this
-//! client only ever reads, on Manager's own schedule, never writes.
+//! Portal and the dashboard's "Secrets" page remain the read/write boundary
+//! humans use against `ais_secretserver`, unchanged. This client's own writes
+//! (`seed_from_env_lines`) are narrower: they only ever fill a confirmed gap
+//! (an app with real content in its bundle but nothing on secret-server yet),
+//! never overwrite an existing record.
 
 pub mod proto {
     tonic::include_proto!("secret_service");
 }
 
-use artisan_middleware::dusa_collection_utils::core::errors::{ErrorArrayItem, Errors};
+use artisan_middleware::dusa_collection_utils::core::{
+    errors::{ErrorArrayItem, Errors},
+    logger::LogLevel,
+};
+use artisan_middleware::dusa_collection_utils::log;
 use proto::secret_service_client::SecretServiceClient;
 use tonic::transport::Channel;
 
@@ -77,5 +83,87 @@ impl SecretClient {
             }
         }
         Ok(lines)
+    }
+
+    /// Creates one arbitrary-app secret. Returns `Ok(false)` rather than an
+    /// error when the write is rejected -- `ais_secretserver`'s
+    /// `create_secret` handler collapses every DB error (a genuine outage as
+    /// much as a duplicate-key conflict from a key that's already there)
+    /// into `SimpleSecretResponse { success: false }` with no distinguishing
+    /// text, so a "false" here is treated as "already present, nothing to
+    /// do" by the only caller (`seed_from_env_lines`), not as fatal.
+    async fn create_app_secret(
+        &mut self,
+        runner_id: &str,
+        environment_id: &str,
+        secret_key: &str,
+        value: &str,
+    ) -> Result<bool, ErrorArrayItem> {
+        let request = proto::CreateSecretRequest {
+            runner_id: runner_id.to_owned(),
+            environment_id: environment_id.to_owned(),
+            secret_key: secret_key.to_owned(),
+            value: value.to_owned(),
+            actor: "ais_manager".to_owned(),
+        };
+
+        let response = self
+            .client
+            .create_secret(request)
+            .await
+            .map_err(|status| rpc_err("create_secret", status))?
+            .into_inner();
+
+        Ok(response.success)
+    }
+
+    /// Seeds secret-server with `env_content`'s `KEY=value` pairs for
+    /// `runner_id`/`environment_id`, one `CreateSecret` call per key.
+    ///
+    /// Backfills the case watchdog's own migration-time seed (see
+    /// `runtime_bundle_lifecycle::migrate_app_to_bundle` on the watchdog
+    /// side) can't reach: an app whose bundle was already built *before*
+    /// that seeding existed, so it never ran. This periodic sync loop
+    /// already round-trips every locally-hosted app -- when secret-server
+    /// comes back empty but the bundle it would otherwise overwrite already
+    /// has real content, that content is pushed up here instead, so it
+    /// becomes the fleet-wide record other instances can pull down. Called
+    /// only when secret-server was just confirmed to have nothing for this
+    /// app -- never used to overwrite an existing record, only to fill a gap
+    /// the first time it's found.
+    pub async fn seed_from_env_lines(
+        &mut self,
+        runner_id: &str,
+        environment_id: &str,
+        env_content: &str,
+    ) -> Result<(), ErrorArrayItem> {
+        for line in env_content.lines() {
+            let line = line.trim();
+            if line.is_empty() || line.starts_with('#') {
+                continue;
+            }
+            let Some((key, value)) = line.split_once('=') else {
+                continue;
+            };
+            let (key, value) = (key.trim(), value.trim());
+            if key.is_empty() {
+                continue;
+            }
+
+            match self.create_app_secret(runner_id, environment_id, key, value).await {
+                Ok(true) => {}
+                Ok(false) => {
+                    log!(
+                        LogLevel::Debug,
+                        "Seeding secret-server: '{}' already has a value for {}/{} (likely raced with another instance); leaving it as-is",
+                        key,
+                        runner_id,
+                        environment_id
+                    );
+                }
+                Err(err) => return Err(err),
+            }
+        }
+        Ok(())
     }
 }
