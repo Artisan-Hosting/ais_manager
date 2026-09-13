@@ -898,12 +898,15 @@ fn get_token_from_file(path: &str) -> std::io::Result<String> {
 }
 
 fn get_git_token_file() -> Option<String> {
-    let contents = match fs::read_to_string("Overrides.toml") {
-        Ok(contents) => contents,
-        Err(_) => return None,
+    let contents = if let Ok(contents) = fs::read_to_string("runtime.toml") {
+        contents
+    } else if let Ok(contents) = fs::read_to_string("Overrides.toml") {
+        contents
+    } else {
+        return None;
     };
 
-    let parsed = match contents.parse::<toml::Value>() {
+    let parsed = match toml::from_str::<toml::Value>(&contents) {
         Ok(parsed) => parsed,
         Err(_) => return None,
     };

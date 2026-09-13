@@ -19,6 +19,23 @@ use crate::system::state::save_state;
 use super::state::get_state_path;
 
 pub fn get_config() -> AppConfig {
+    if let Ok(content) = std::fs::read_to_string("runtime.toml") {
+        if let Ok(env_v2) = toml::from_str::<artisan_middleware::enviornment::definitions::Enviornment_V2>(&content) {
+            log!(LogLevel::Info, "Loaded ais_manager configuration from Environment V2 (runtime.toml)");
+            return AppConfig {
+                app_name: env_v2.app_name,
+                max_ram_usage: env_v2.max_ram_usage,
+                max_cpu_usage: env_v2.max_cpu_usage,
+                environment: env_v2.environment.to_string(),
+                debug_mode: env_v2.debug_mode,
+                log_level: env_v2.log_level,
+                git: env_v2.git,
+                database: None,
+                aggregator: env_v2.aggregator,
+            };
+        }
+    }
+
     match artisan_middleware::config::AppConfig::new() {
         Ok(mut data_loaded) => {
             // data_loaded.git = None;
