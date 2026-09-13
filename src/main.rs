@@ -28,6 +28,7 @@ use tokio::{net::TcpListener, time::sleep};
 
 mod applications;
 mod network;
+mod secrets;
 mod system;
 mod watchdog;
 
@@ -139,6 +140,73 @@ async fn main() -> Result<(), ErrorArrayItem> {
                 }
                 Err(err) => {
                     log!(LogLevel::Warn, "Periodic git repo audit failed: {}", err);
+                }
+            }
+        }
+    });
+
+    // Periodically pull each locally-hosted git-backed app's full secret-server
+    // KV set and relay it to watchdog to fold into that app's runtime bundle
+    // (Phase E, E10). Secret-server, not this bundle, stays the authoritative
+    // read/write boundary for the dashboard's Secrets page -- this loop only
+    // ever reads from secret-server and pushes down, never the other
+    // direction. Scoped to git-backed client apps for now, matching E9's
+    // generic_runner-only bundle-consumption scope; the fixed system apps
+    // (ais_manager, ais_gitmon, ais_mailler) keep their legacy config path.
+    let secrets_sync_config = config.clone();
+    tokio::spawn(async move {
+        loop {
+            sleep(Duration::from_secs(300)).await;
+
+            let path = crate::system::git_repos::resolve_path(&secrets_sync_config);
+            let credentials = crate::system::git_repos::load(&path).await;
+
+            for auth in &credentials.auth_items {
+                let bare_id = auth.generate_id().to_string();
+                let application = format!("ais_{}", bare_id);
+
+                let environment = match crate::watchdog::get_app_environment(&application).await {
+                    Ok(Some(env)) => env,
+                    Ok(None) => continue, // no runtime bundle yet; nothing to sync
+                    Err(err) => {
+                        log!(
+                            LogLevel::Warn,
+                            "Secrets sync: reading environment for '{}' failed: {}",
+                            application,
+                            err
+                        );
+                        continue;
+                    }
+                };
+
+                let mut client = match crate::secrets::SecretClient::connect().await {
+                    Ok(client) => client,
+                    Err(err) => {
+                        log!(LogLevel::Warn, "Secrets sync: connecting to secret-server failed: {}", err);
+                        break; // secret-server is unreachable; retry next interval
+                    }
+                };
+
+                let content = match client.get_all_as_env_lines(&bare_id, &environment).await {
+                    Ok(content) => content,
+                    Err(err) => {
+                        log!(
+                            LogLevel::Warn,
+                            "Secrets sync: fetching secrets for '{}' failed: {}",
+                            application,
+                            err
+                        );
+                        continue;
+                    }
+                };
+
+                if let Err(err) = crate::watchdog::set_bundle_env(&application, &content).await {
+                    log!(
+                        LogLevel::Warn,
+                        "Secrets sync: pushing bundle env for '{}' failed: {}",
+                        application,
+                        err
+                    );
                 }
             }
         }

@@ -178,6 +178,10 @@ pub fn map_config_file_kind(kind: &str) -> Option<i32> {
     match kind.to_lowercase().as_str() {
         "config" | "1" => Some(proto::ConfigFileKind::Config as i32),
         "overrides" | "2" => Some(proto::ConfigFileKind::Overrides as i32),
+        // Phase E, E11: the two bundle-backed structural-config kinds. Not
+        // yet wired up on the Portal side, but harmless to accept here.
+        "runtime" | "3" => Some(proto::ConfigFileKind::Runtime as i32),
+        "custom" | "4" => Some(proto::ConfigFileKind::Custom as i32),
         _ => None,
     }
 }
@@ -321,6 +325,42 @@ pub async fn set_config_file(
         .into_inner();
 
     Ok(response)
+}
+
+/// Pushes secret-server's current KV set for `application` down into its
+/// runtime bundle's env content (Phase E, E10). Manager is the authoritative
+/// source being relayed here, not a competing edit that needs reconciling
+/// against watchdog's own copy, so this always writes with an empty
+/// `expected_previous_sha256` -- see `try_write_bundle_kind`'s doc comment on
+/// the watchdog side for the matching reasoning.
+pub async fn set_bundle_env(application: &str, content: &str) -> Result<proto::SetConfigFileResponse, ErrorArrayItem> {
+    set_config_file(application, proto::ConfigFileKind::BundleEnv as i32, content, "").await
+}
+
+/// Reads back the `environment` field of an app's fixed runtime config, so
+/// the secrets-sync loop knows which secret-server `environment_id` to pull
+/// (Phase E, E10). Returns `Ok(None)` when the app has no runtime bundle yet
+/// (nothing to sync until it's created) rather than treating that as an
+/// error.
+pub async fn get_app_environment(application: &str) -> Result<Option<String>, ErrorArrayItem> {
+    let res = get_config_file(application, proto::ConfigFileKind::Runtime as i32, false).await?;
+    if !res.found || res.content.trim().is_empty() {
+        return Ok(None);
+    }
+
+    #[derive(Deserialize)]
+    struct RuntimeEnvironmentOnly {
+        environment: String,
+    }
+
+    let parsed: RuntimeEnvironmentOnly = toml::from_str(&res.content).map_err(|err| {
+        ErrorArrayItem::new(
+            Errors::GeneralError,
+            format!("Parsing runtime config for '{}' to read environment field: {}", application, err),
+        )
+    })?;
+
+    Ok(Some(parsed.environment))
 }
 
 pub async fn recalculate_allowed_clients() -> Result<proto::CommandResponse, ErrorArrayItem> {
