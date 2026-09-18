@@ -22,7 +22,7 @@ pub fn make_app_status(
     let identity: Identifier = Identifier::load_from_file()?;
     let key: Stringy = app_name.into();
 
-    let app_id: Stringy = {
+    let project_id: Stringy = {
         let data = format!("{}-{}", identity.id, app_name);
         let hash = create_hash(data);
         truncate(&*hash, 20).to_owned()
@@ -41,7 +41,7 @@ pub fn make_app_status(
     };
 
     let app_status: AppStatus = AppStatus {
-        app_id,
+        project_id,
         git_id,
         app_data: app_config,
         uptime: None,

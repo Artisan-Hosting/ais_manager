@@ -51,6 +51,12 @@ use once_cell::sync::Lazy;
 use serde::{Deserialize, Serialize};
 use std::time::Duration;
 
+#[derive(Deserialize, Debug)]
+struct HydrateRequest {
+    repo_id: Option<String>,
+    force: Option<bool>,
+}
+
 use crate::watchdog;
 
 /// Where the git monitor looks when nothing overrides it. Kept byte-identical
@@ -461,6 +467,7 @@ pub fn handles(verb: &str) -> bool {
             | "GitReposUpdate"
             | "GitReposRemove"
             | "GitReposAudit"
+            | "GitReposHydrate"
     )
 }
 
@@ -477,7 +484,7 @@ pub async fn handle(verb: &str, body: &str, config: &AppConfig) -> AppMessage {
         return match run_audit(config).await {
             Ok(outcome) => match serde_json::to_string(&outcome) {
                 Ok(json) => AppMessage::Response(CommandResponse {
-                    app_id: GITMON_APP.into(),
+                    project_id: GITMON_APP.into(),
                     command_type: CommandType::Custom(verb.to_owned()),
                     success: true,
                     message: Some(json),
@@ -500,7 +507,7 @@ pub async fn handle(verb: &str, body: &str, config: &AppConfig) -> AppMessage {
                 ),
             ),
             Ok(json) => AppMessage::Response(CommandResponse {
-                app_id: GITMON_APP.into(),
+                project_id: GITMON_APP.into(),
                 command_type: CommandType::Custom(verb.to_owned()),
                 success: true,
                 message: Some(json),
@@ -514,7 +521,7 @@ pub async fn handle(verb: &str, body: &str, config: &AppConfig) -> AppMessage {
 fn failure(verb: &str, message: String) -> AppMessage {
     log!(LogLevel::Warn, "{} failed: {}", verb, message);
     AppMessage::Response(CommandResponse {
-        app_id: GITMON_APP.into(),
+        project_id: GITMON_APP.into(),
         command_type: CommandType::Custom(verb.to_owned()),
         success: false,
         message: Some(message),
@@ -635,6 +642,48 @@ async fn run(verb: &str, body: &str, config: &AppConfig) -> Result<ReposResponse
 
             credentials.auth_items.remove(index);
             request.reload
+        }
+
+        "GitReposHydrate" => {
+            // Automatic hydration - no reload needed
+            let _ = parse::<HydrateRequest>(body);
+            
+            // Trigger sync for all configured repos
+            log!(LogLevel::Info, "GitReposHydrate triggered - syncing all configured repos");
+            
+            if let Err(err) = sync_configured_repos(&credentials).await {
+                log!(
+                    LogLevel::Error,
+                    "Failed to sync configured repositories: {}",
+                    err.err_mesg
+                );
+                return Err(err);
+            }
+
+            // Cleanup any stale repositories
+            if let Err(err) = cleanup_stale_repos(&credentials) {
+                log!(
+                    LogLevel::Error,
+                    "Failed to cleanup stale repositories: {}",
+                    err
+                );
+            }
+
+            // Recalculate allowed clients in watchdog
+            // Best effort
+            if let Err(err) = crate::watchdog::recalculate_allowed_clients().await {
+                log!(
+                    LogLevel::Error,
+                    "Failed to recalculate allowed clients in watchdog: {}",
+                    err.err_mesg
+                );
+            }
+
+            return Ok(ReposResponse {
+                envelope: envelope(&credentials, &path),
+                reload: ReloadOutcome::skipped(),
+                moved: None,
+            });
         }
 
         other => {

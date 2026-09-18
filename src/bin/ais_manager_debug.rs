@@ -213,7 +213,7 @@ fn parse_command(args: &[String], reload: bool) -> Result<(CommandType, String),
         }
         // The manager reads these as `Custom("<Verb> <json>")` -- the JSON body
         // has to ride inside the verb string because `Command` has no field for
-        // one. `app_id` is unused for them, hence the empty string.
+        // one. `project_id` is unused for them, hence the empty string.
         "git-repos" => parse_git_repos(&args[1..], reload).map(|ct| (ct, String::new())),
         other => Err(format!("Unknown command '{other}'")),
     }
@@ -284,7 +284,7 @@ async fn send_manager_command(
     stream: &mut TcpStream,
     pub_key: &[u8; 32],
     insecure: bool,
-    app_id: String,
+    project_id: String,
     command_type: CommandType,
 ) -> Result<AppMessage, String> {
     // The CLI dials the manager, so it plays the same initiator role the portal
@@ -304,7 +304,7 @@ async fn send_manager_command(
         })?;
 
     let payload = AppMessage::Command(Command {
-        app_id: app_id.into(),
+        project_id: project_id.into(),
         command_type,
         timestamp: current_timestamp(),
     });
@@ -338,8 +338,8 @@ async fn main() -> Result<(), String> {
                 println!("{msg}");
             } else {
                 println!(
-                    "{{\"success\":{},\"app_id\":\"{}\",\"command_type\":\"{}\"}}",
-                    r.success, r.app_id, r.command_type
+                    "{{\"success\":{},\"project_id\":\"{}\",\"command_type\":\"{}\"}}",
+                    r.success, r.project_id, r.command_type
                 );
             }
         }

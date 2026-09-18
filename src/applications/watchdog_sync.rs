@@ -1,5 +1,5 @@
 use artisan_middleware::{
-    aggregator::{Metrics, NetworkUsage, Status},
+    aggregator::{Metrics, NetworkUsage, Status, StatusParseError},
     dusa_collection_utils::core::{
         errors::{ErrorArrayItem, Errors},
         functions::current_timestamp,
@@ -12,23 +12,20 @@ use artisan_middleware::{
 
 use super::child::{make_app_status, APP_STATUS_ARRAY};
 
-fn map_watchdog_status(status: &str) -> Status {
-    match status.trim().to_ascii_lowercase().as_str() {
-        "starting" => Status::Starting,
-        "running" => Status::Running,
-        "idle" => Status::Idle,
-        "stopping" => Status::Stopping,
-        "stopped" => Status::Stopped,
-        "warning" => Status::Warning,
-        "building" => Status::Building,
-        _ => Status::Unknown,
-    }
+fn map_watchdog_status(status: &str) -> Result<Status, StatusParseError> {
+    Status::from_str_name(status.trim())
 }
 
 fn metrics_from_watchdog(
     status: &crate::watchdog::proto::ApplicationStatusMessage,
 ) -> Option<Metrics> {
-    let mapped = map_watchdog_status(&status.status);
+    let mapped = match map_watchdog_status(&status.status) {
+        Ok(s) => s,
+        Err(err) => {
+            log!(LogLevel::Error, "Failed to parse watchdog status '{}': {}", status.status, err);
+            return None;
+        }
+    };
     if matches!(
         mapped,
         Status::Stopped | Status::Unknown | Status::Stopping | Status::Starting | Status::Building
@@ -70,7 +67,13 @@ fn apply_watchdog_status(
     status: &crate::watchdog::proto::ApplicationStatusMessage,
     now: u64,
 ) {
-    app_status.app_data.set_status(map_watchdog_status(&status.status));
+    match map_watchdog_status(&status.status) {
+        Ok(s) => app_status.app_data.set_status(s),
+        Err(err) => {
+            log!(LogLevel::Error, "Failed to parse watchdog status '{}': {}", status.status, err);
+            app_status.app_data.set_status(Status::Warning);
+        }
+    }
     if let Some(pid) = status.pid {
         app_status.app_data.set_pid(pid);
     }
@@ -108,7 +111,13 @@ pub async fn refresh_status_from_watchdog() -> Result<(), ErrorArrayItem> {
 
         let mut app_config =
             artisan_middleware::config_bundle::ApplicationConfig::new(state, None, None);
-        app_config.set_status(map_watchdog_status(&status.status));
+        match map_watchdog_status(&status.status) {
+            Ok(s) => app_config.set_status(s),
+            Err(err) => {
+                log!(LogLevel::Error, "Failed to parse watchdog status '{}': {}", status.status, err);
+                app_config.set_status(Status::Warning);
+            }
+        }
         if let Some(pid) = status.pid {
             app_config.set_pid(pid);
         }

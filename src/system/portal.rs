@@ -368,11 +368,11 @@ async fn recv_bootstrap(
 async fn stream_logs_over_tunnel(
     handle: &mut ConnectionHandle<TunnelMessage>,
     request_id: u64,
-    app_id: &str,
+    project_id: &str,
 ) -> Result<(), ErrorArrayItem> {
     let paths = [
-        artisan_middleware::dusa_collection_utils::core::types::pathtype::PathType::Content(format!("/tmp/.{}.state", app_id)),
-        artisan_middleware::dusa_collection_utils::core::types::pathtype::PathType::Content(format!("/opt/artisan/tmp/.{}.state", app_id)),
+        artisan_middleware::dusa_collection_utils::core::types::pathtype::PathType::Content(format!("/tmp/.{}.state", project_id)),
+        artisan_middleware::dusa_collection_utils::core::types::pathtype::PathType::Content(format!("/opt/artisan/tmp/.{}.state", project_id)),
     ];
     
     let mut state_opt = None;
@@ -392,7 +392,7 @@ async fn stream_logs_over_tunnel(
                 TunnelMessage::App(Correlated {
                     request_id,
                     body: AppMessage::Response(CommandResponse {
-                        app_id: app_id.to_string().into(),
+                        project_id: project_id.to_string().into(),
                         command_type: CommandType::Custom("StreamLogs".to_string()),
                         success: false,
                         message: Some("No log files found for this application".to_string()),
@@ -439,7 +439,7 @@ async fn stream_logs_over_tunnel(
             TunnelMessage::App(Correlated {
                 request_id,
                 body: AppMessage::Response(CommandResponse {
-                    app_id: app_id.to_string().into(),
+                    project_id: project_id.to_string().into(),
                     command_type: CommandType::Custom("LogStreamChunk".to_string()),
                     success: true,
                     message: Some(chunk_json),
@@ -455,7 +455,7 @@ async fn stream_logs_over_tunnel(
         TunnelMessage::App(Correlated {
             request_id,
             body: AppMessage::Response(CommandResponse {
-                app_id: app_id.to_string().into(),
+                project_id: project_id.to_string().into(),
                 command_type: CommandType::Custom("LogStreamEnd".to_string()),
                 success: true,
                 message: None,
@@ -499,8 +499,8 @@ async fn run_dispatch_loop(
         if let AppMessage::Command(ref command) = body {
             if command.command_type == CommandType::Custom("StreamLogs".to_string()) {
                 is_stream = true;
-                let app_id = command.app_id.to_string();
-                if let Err(err) = stream_logs_over_tunnel(handle, request_id, &app_id).await {
+                let project_id = command.project_id.to_string();
+                if let Err(err) = stream_logs_over_tunnel(handle, request_id, &project_id).await {
                     log!(LogLevel::Error, "Failed to stream logs: {}", err);
                 }
             }
@@ -512,13 +512,13 @@ async fn run_dispatch_loop(
 
         let response_body = match body {
             AppMessage::Command(command) => {
-                let app_id = command.app_id.clone();
+                let project_id = command.project_id.clone();
                 let command_type = command.command_type.clone();
 
                 match command_processor(command, application_controls.clone(), state).await {
                     Ok(data) => data,
                     Err(err) => AppMessage::Response(CommandResponse {
-                        app_id,
+                        project_id,
                         command_type,
                         success: false,
                         message: Some(err.to_string()),
@@ -532,7 +532,7 @@ async fn run_dispatch_loop(
                     other
                 );
                 AppMessage::Response(CommandResponse {
-                    app_id: "".into(),
+                    project_id: "".into(),
                     command_type: CommandType::Custom("illegal message".into()),
                     success: false,
                     message: Some("Illegal message for this channel".into()),

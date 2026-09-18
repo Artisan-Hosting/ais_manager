@@ -20,8 +20,7 @@ path = "src/bin/ais_manager_debug.rs"
 required-features = ["debug-cli"]
 
 [dependencies]
-#artisan_middleware = { git = "https://github.com/Artisan-Hosting/artisan_lib.git", branch = "stable" }
-artisan_middleware = {path = "/opt/artisan/lib/artisan_lib"}
+artisan_middleware = "7.0.0"
 base64 = "0.22.1"
 colored = "3.0.0"
 gethostname = "1.0.0"

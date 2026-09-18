@@ -92,13 +92,13 @@ pub async fn process_tcp(
 
     match request {
         AppMessage::Command(command) => {
-            let app_id = command.app_id.clone();
+            let project_id = command.project_id.clone();
             let command_type = command.command_type.clone();
 
             let payload = match command_processor(command, application_controls, state).await {
                 Ok(data) => data,
                 Err(err) => AppMessage::Response(CommandResponse {
-                    app_id,
+                    project_id,
                     command_type,
                     success: false,
                     message: Some(err.to_string()),
@@ -152,19 +152,19 @@ pub(crate) async fn command_processor(
     {
         log!(LogLevel::Error, "{}", err);
         return Ok(AppMessage::Response(CommandResponse {
-            app_id: "".into(),
+            project_id: "".into(),
             command_type: CommandType::Custom("Unknown".into()),
             success: false,
             message: Some("Server not accepting requests".to_owned()),
         }));
     }
 
-    let app_id: Stringy = command.app_id;
+    let project_id: Stringy = command.project_id;
     match command.command_type {
         artisan_middleware::aggregator::CommandType::Start => {
-            match watchdog::execute_start(&app_id.to_string()).await {
+            match watchdog::execute_start(&project_id.to_string()).await {
                 Ok(response) => Ok(AppMessage::Response(CommandResponse {
-                    app_id,
+                    project_id,
                     command_type: CommandType::Start,
                     success: response.accepted,
                     message: match response.message.trim() {
@@ -173,7 +173,7 @@ pub(crate) async fn command_processor(
                     },
                 })),
                 Err(err) => Ok(AppMessage::Response(CommandResponse {
-                    app_id,
+                    project_id,
                     command_type: CommandType::Start,
                     success: false,
                     message: Some(format!("Watchdog unavailable: {}", err)),
@@ -181,19 +181,19 @@ pub(crate) async fn command_processor(
             }
         }
         artisan_middleware::aggregator::CommandType::Stop => {
-            if app_id == "ais_manager".into() {
+            if project_id == "ais_manager".into() {
                 application_controls.signal_reload();
                 return Ok(AppMessage::Response(CommandResponse {
-                    app_id,
+                    project_id,
                     command_type: CommandType::Restart,
                     success: true,
                     message: Some("triggered reload !".to_owned()),
                 }));
             }
 
-            match watchdog::execute_stop(&app_id.to_string()).await {
+            match watchdog::execute_stop(&project_id.to_string()).await {
                 Ok(response) => Ok(AppMessage::Response(CommandResponse {
-                    app_id,
+                    project_id,
                     command_type: CommandType::Stop,
                     success: response.accepted,
                     message: match response.message.trim() {
@@ -202,7 +202,7 @@ pub(crate) async fn command_processor(
                     },
                 })),
                 Err(err) => Ok(AppMessage::Response(CommandResponse {
-                    app_id,
+                    project_id,
                     command_type: CommandType::Stop,
                     success: false,
                     message: Some(format!("Watchdog unavailable: {}", err)),
@@ -211,19 +211,19 @@ pub(crate) async fn command_processor(
         }
         artisan_middleware::aggregator::CommandType::Restart => {
             // Check if the request is a self restart first
-            if app_id == "ais_manager".into() {
+            if project_id == "ais_manager".into() {
                 application_controls.signal_reload();
                 return Ok(AppMessage::Response(CommandResponse {
-                    app_id,
+                    project_id,
                     command_type: CommandType::Restart,
                     success: true,
                     message: None,
                 }));
             }
 
-            match watchdog::execute_reload(&app_id.to_string()).await {
+            match watchdog::execute_reload(&project_id.to_string()).await {
                 Ok(response) => Ok(AppMessage::Response(CommandResponse {
-                    app_id,
+                    project_id,
                     command_type: CommandType::Restart,
                     success: response.accepted,
                     message: match response.message.trim() {
@@ -232,7 +232,7 @@ pub(crate) async fn command_processor(
                     },
                 })),
                 Err(err) => Ok(AppMessage::Response(CommandResponse {
-                    app_id,
+                    project_id,
                     command_type: CommandType::Restart,
                     success: false,
                     message: Some(format!("Watchdog unavailable: {}", err)),
@@ -244,8 +244,8 @@ pub(crate) async fn command_processor(
                 .try_read_with_timeout(Some(Duration::from_secs(5)))
                 .await?;
 
-            if store_lock.contains_key(&app_id) {
-                match store_lock.get(&app_id) {
+            if store_lock.contains_key(&project_id) {
+                match store_lock.get(&project_id) {
                     Some(app) => {
                         let mut app = app.clone();
                         app.timestamp = 0;
@@ -261,7 +261,7 @@ pub(crate) async fn command_processor(
                         }
 
                         let response_data = AppMessage::Response(CommandResponse {
-                            app_id,
+                            project_id,
                             command_type: CommandType::Status,
                             success: true,
                             message: app.to_json(),
@@ -270,10 +270,10 @@ pub(crate) async fn command_processor(
                     }
                     None => {
                         return Ok(AppMessage::Response(CommandResponse {
-                            app_id: app_id.clone(),
+                            project_id: project_id.clone(),
                             command_type: CommandType::Status,
                             success: false,
-                            message: Some(format!("The app: {}, wasn't in our store", app_id)),
+                            message: Some(format!("The app: {}, wasn't in our store", project_id)),
                         }));
                     }
                 }
@@ -282,10 +282,10 @@ pub(crate) async fn command_processor(
             drop(store_lock);
 
             return Ok(AppMessage::Response(CommandResponse {
-                app_id: app_id.clone(),
+                project_id: project_id.clone(),
                 command_type: CommandType::Status,
                 success: false,
-                message: Some(format!("The app: {}, wasn't in our store", app_id)),
+                message: Some(format!("The app: {}, wasn't in our store", project_id)),
             }));
         }
         artisan_middleware::aggregator::CommandType::AllStatus => {
@@ -320,7 +320,7 @@ pub(crate) async fn command_processor(
             }
 
             let response_data = AppMessage::Response(CommandResponse {
-                app_id,
+                project_id,
                 command_type: CommandType::AllStatus,
                 success: true,
                 message: Some(format!("[{}]", data).replace(",]", "]")),
@@ -338,7 +338,7 @@ pub(crate) async fn command_processor(
 
         // `Custom` is the extension point for verbs the shared crate does not
         // model. The payload rides after the first space because
-        // `Command` has nowhere else to put one -- it carries only `app_id`,
+        // `Command` has nowhere else to put one -- it carries only `project_id`,
         // `command_type` and `timestamp`, and the wire is bincode of those, so
         // adding a real body field would break every peer at once.
         artisan_middleware::aggregator::CommandType::Custom(ref raw) => {
@@ -356,7 +356,7 @@ pub(crate) async fn command_processor(
             }
 
             return Ok(AppMessage::Response(CommandResponse {
-                app_id,
+                project_id,
                 command_type: CommandType::Custom("command not found".to_string()),
                 success: false,
                 message: Some("Request not implemented".into()),

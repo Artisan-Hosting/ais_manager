@@ -189,7 +189,7 @@ pub fn map_config_file_kind(kind: &str) -> Option<i32> {
 pub async fn handle(verb: &str, body: &str) -> AppMessage {
     match run(verb, body).await {
         Ok(json) => AppMessage::Response(CommandResponse {
-            app_id: "".into(),
+            project_id: "".into(),
             command_type: CommandType::Custom(verb.to_owned()),
             success: true,
             message: Some(json),
@@ -200,7 +200,7 @@ pub async fn handle(verb: &str, body: &str) -> AppMessage {
 
 fn failure(verb: &str, message: String) -> AppMessage {
     AppMessage::Response(CommandResponse {
-        app_id: "".into(),
+        project_id: "".into(),
         command_type: CommandType::Custom(verb.to_owned()),
         success: false,
         message: Some(message),
