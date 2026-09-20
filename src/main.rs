@@ -27,6 +27,7 @@ use system::{
 use tokio::{net::TcpListener, time::sleep};
 
 mod applications;
+mod mtls_client;
 mod network;
 mod secrets;
 mod system;
