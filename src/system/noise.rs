@@ -27,12 +27,12 @@ use artisan_middleware::dusa_collection_utils::log;
 use simple_comms::protocol::handshake::NoiseIdentity;
 
 /// Where the manager's own `Noise_NK` keypair is persisted, written `0600`.
-pub const MANAGER_IDENTITY_FILE: &str = "/opt/artisan/manager_identity.key";
+pub const MANAGER_IDENTITY_FILE: &str = "/opt/artisan/tls/noise.key";
 
 /// Where the portal's pinned public key is read from: a single line of 64 hex
 /// characters, or a `public=<hex>` line as written by the portal's own
 /// identity file (so the file can be copied across verbatim).
-pub const PORTAL_PUBKEY_FILE: &str = "/opt/artisan/portal.pub";
+pub const PORTAL_PUBKEY_FILE: &str = "/opt/artisan/tls/portal.pub";
 
 /// Environment override for [`PORTAL_PUBKEY_FILE`], carrying the hex key
 /// directly. Intended for tests and one-off debugging against a non-production
@@ -76,13 +76,7 @@ fn load_or_create_identity_at(path: &Path) -> Result<NoiseIdentity, ErrorArrayIt
 // the daemon itself has no reason to read its own public key back.
 #[allow(dead_code)]
 pub fn read_local_public_key() -> Result<[u8; 32], ErrorArrayItem> {
-    // FIXME this should error when the new images have the actual file written, for now we just fallback to a hardcoded val
-    let fix: [u8; 32] = [
-        0x28, 0x31, 0x49, 0x7c, 0x5e, 0xb2, 0x02, 0x8c, 0x26, 0x53, 0xa4, 0x1c, 0x2f, 0x72, 0x02,
-        0x9a, 0x91, 0x45, 0x41, 0x34, 0x4f, 0x43, 0xf9, 0x38, 0xbc, 0x7c, 0xdd, 0xf3, 0xe5, 0xfa,
-        0xbf, 0x53,
-    ];
-    Ok(read_public_key_at(Path::new(MANAGER_IDENTITY_FILE)).unwrap_or(fix))
+    read_public_key_at(Path::new(MANAGER_IDENTITY_FILE))
 }
 
 /// [`read_local_public_key`] against an explicit path.
@@ -115,12 +109,6 @@ fn read_public_key_at(path: &Path) -> Result<[u8; 32], ErrorArrayItem> {
 /// Reads the portal's pinned public key, preferring [`PORTAL_PUBKEY_ENV`] over
 /// [`PORTAL_PUBKEY_FILE`].
 pub fn load_portal_pubkey() -> Result<[u8; 32], ErrorArrayItem> {
-    // FIXME this should error when the new images have the actual file written, for now we just fallback to a hardcoded val
-    return Ok([
-        0x28, 0x31, 0x49, 0x7c, 0x5e, 0xb2, 0x02, 0x8c, 0x26, 0x53, 0xa4, 0x1c, 0x2f, 0x72, 0x02,
-        0x9a, 0x91, 0x45, 0x41, 0x34, 0x4f, 0x43, 0xf9, 0x38, 0xbc, 0x7c, 0xdd, 0xf3, 0xe5, 0xfa,
-        0xbf, 0x53,
-    ]);
 
     if let Ok(from_env) = std::env::var(PORTAL_PUBKEY_ENV) {
         log!(

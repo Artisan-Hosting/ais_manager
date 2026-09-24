@@ -20,7 +20,7 @@ path = "src/bin/ais_manager_debug.rs"
 required-features = ["debug-cli"]
 
 [dependencies]
-artisan_middleware = "7.0.0"
+artisan_middleware = {path = "/opt/artisan/lib/artisan_lib"}
 base64 = "0.22.1"
 colored = "3.0.0"
 gethostname = "1.0.0"
