@@ -215,6 +215,48 @@ pub struct MovedId {
     pub note: &'static str,
 }
 
+/// One repo's real hydration state, as read from *this node's* disk -- never
+/// guessed at by a central service that has no filesystem access to the node
+/// it's describing (see `RESOURCE_TAXONOMY.md`/the dashboard cleanup plan for
+/// why that was the bug this replaces).
+///
+/// `sync_status` reuses the same string convention Portal's own
+/// `NodeHydrationStatus.sync_status` already uses (`"latest"|"idle"|"failed"`)
+/// rather than a new Rust enum, so both sides can evolve the set of values
+/// independently of a shared crate. `"latest"` is only ever set right after a
+/// real fetch+reset against origin (`sync_configured_repos`); a passive read
+/// (`GitReposStatus`) that never contacted origin reports `"idle"` instead --
+/// the checkout is there and readable, but this node has not just confirmed
+/// it matches the remote.
+#[derive(Serialize, Debug, Clone)]
+pub struct RepoHydrationResult {
+    pub id: String,
+    pub is_hydrated: bool,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub commit_sha: Option<String>,
+    /// The commit's own timestamp (`git log --format=%ct`), not "when we last
+    /// tried to sync" -- this answers "how stale is this checkout", which a
+    /// last-attempt timestamp does not.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub last_sync_timestamp: Option<u64>,
+    pub sync_status: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub error_message: Option<String>,
+}
+
+/// Reply to `GitReposHydrate` specifically: it doesn't just report the repo
+/// list like every other verb (`ReposResponse`), it also reports what the
+/// sync it just ran actually did per repo. Kept separate from `ReposResponse`
+/// rather than widening that type, the same way `GitReposAudit` gets its own
+/// reply shape instead of being squeezed into it.
+#[derive(Serialize, Debug, Clone)]
+pub struct ReposHydrateResponse {
+    #[serde(flatten)]
+    pub envelope: ReposEnvelope,
+    pub reload: ReloadOutcome,
+    pub hydration: Vec<RepoHydrationResult>,
+}
+
 /// Body of a mutating request. `reload` defaults to true so the common case --
 /// one edit that should take effect now -- needs no ceremony, while a caller
 /// making several edits can pass `false` and restart once at the end.
@@ -468,6 +510,7 @@ pub fn handles(verb: &str) -> bool {
             | "GitReposRemove"
             | "GitReposAudit"
             | "GitReposHydrate"
+            | "GitReposStatus"
     )
 }
 
@@ -492,6 +535,83 @@ pub async fn handle(verb: &str, body: &str, config: &AppConfig) -> AppMessage {
                 Err(err) => failure(verb, format!("Serializing the response: {}", err)),
             },
             Err(err) => failure(verb, err.err_mesg.to_string()),
+        };
+    }
+
+    // `GitReposStatus` is a pure read of whatever's already on this node's
+    // disk -- never a clone/fetch/reset -- so a Repos page load can call it
+    // on every render. Only `GitReposHydrate` (an explicit "sync now") does
+    // real git work.
+    if verb == "GitReposStatus" {
+        let path = resolve_path(config);
+        let credentials = load(&path).await;
+        let hydration = read_repo_status(&credentials).await;
+        return match serde_json::to_string(&hydration) {
+            Ok(json) => AppMessage::Response(CommandResponse {
+                project_id: GITMON_APP.into(),
+                command_type: CommandType::Custom(verb.to_owned()),
+                success: true,
+                message: Some(json),
+            }),
+            Err(err) => failure(verb, format!("Serializing the response: {}", err)),
+        };
+    }
+
+    // `GitReposHydrate` reports what the sync it just ran actually did per
+    // repo, not just the repo list -- `ReposHydrateResponse`, not
+    // `ReposResponse` -- so, like `GitReposAudit`, it gets its own reply path
+    // rather than being squeezed into `run`'s single return type.
+    if verb == "GitReposHydrate" {
+        let path = resolve_path(config);
+        let credentials = load(&path).await;
+        let _ = parse::<HydrateRequest>(body);
+
+        log!(
+            LogLevel::Info,
+            "GitReposHydrate triggered - syncing all configured repos"
+        );
+
+        let hydration = match sync_configured_repos(&credentials).await {
+            Ok(hydration) => hydration,
+            Err(err) => return failure(verb, err.err_mesg.to_string()),
+        };
+
+        if let Err(err) = cleanup_stale_repos(&credentials) {
+            log!(LogLevel::Error, "Failed to cleanup stale repositories: {}", err);
+        }
+
+        // Best effort
+        if let Err(err) = crate::watchdog::recalculate_allowed_clients().await {
+            log!(
+                LogLevel::Error,
+                "Failed to recalculate allowed clients in watchdog: {}",
+                err.err_mesg
+            );
+        }
+
+        let response = ReposHydrateResponse {
+            envelope: envelope(&credentials, &path),
+            reload: ReloadOutcome::skipped(),
+            hydration,
+        };
+
+        return match serde_json::to_string(&response) {
+            Ok(json) if json.len() > MAX_ENVELOPE_BYTES => failure(
+                verb,
+                format!(
+                    "Repo list is {} bytes, over the {} byte transport limit; \
+                     reduce the number of repos on this node",
+                    json.len(),
+                    MAX_ENVELOPE_BYTES
+                ),
+            ),
+            Ok(json) => AppMessage::Response(CommandResponse {
+                project_id: GITMON_APP.into(),
+                command_type: CommandType::Custom(verb.to_owned()),
+                success: true,
+                message: Some(json),
+            }),
+            Err(err) => failure(verb, format!("Serializing the response: {}", err)),
         };
     }
 
@@ -642,48 +762,6 @@ async fn run(verb: &str, body: &str, config: &AppConfig) -> Result<ReposResponse
 
             credentials.auth_items.remove(index);
             request.reload
-        }
-
-        "GitReposHydrate" => {
-            // Automatic hydration - no reload needed
-            let _ = parse::<HydrateRequest>(body);
-            
-            // Trigger sync for all configured repos
-            log!(LogLevel::Info, "GitReposHydrate triggered - syncing all configured repos");
-            
-            if let Err(err) = sync_configured_repos(&credentials).await {
-                log!(
-                    LogLevel::Error,
-                    "Failed to sync configured repositories: {}",
-                    err.err_mesg
-                );
-                return Err(err);
-            }
-
-            // Cleanup any stale repositories
-            if let Err(err) = cleanup_stale_repos(&credentials) {
-                log!(
-                    LogLevel::Error,
-                    "Failed to cleanup stale repositories: {}",
-                    err
-                );
-            }
-
-            // Recalculate allowed clients in watchdog
-            // Best effort
-            if let Err(err) = crate::watchdog::recalculate_allowed_clients().await {
-                log!(
-                    LogLevel::Error,
-                    "Failed to recalculate allowed clients in watchdog: {}",
-                    err.err_mesg
-                );
-            }
-
-            return Ok(ReposResponse {
-                envelope: envelope(&credentials, &path),
-                reload: ReloadOutcome::skipped(),
-                moved: None,
-            });
         }
 
         other => {
@@ -1049,8 +1127,108 @@ fn enforce_checkout_ownership(git_project_path: &PathType) -> Result<(), ErrorAr
     }
 }
 
-pub async fn sync_configured_repos(credentials: &GitCredentials) -> Result<(), ErrorArrayItem> {
+/// Runs `git log -1 --format=%H%x09%ct` in `dest_path` and parses the HEAD
+/// commit's SHA and its own commit timestamp. Read-only -- never fetches,
+/// resets, or otherwise touches the checkout, so this is safe to call from a
+/// verb that must have no side effects.
+async fn git_head_commit(dest_path: &str) -> Result<(String, u64), String> {
+    let output = tokio::process::Command::new("git")
+        .arg("-C")
+        .arg(dest_path)
+        .arg("log")
+        .arg("-1")
+        .arg("--format=%H%x09%ct")
+        .output()
+        .await
+        .map_err(|err| format!("failed to spawn git log: {}", err))?;
+
+    if !output.status.success() {
+        return Err(format!(
+            "git log failed: {}",
+            String::from_utf8_lossy(&output.stderr).trim()
+        ));
+    }
+
+    let text = String::from_utf8_lossy(&output.stdout);
+    let line = text.trim();
+    let (sha, ts) = line
+        .split_once('\t')
+        .ok_or_else(|| format!("unexpected git log output: {:?}", line))?;
+    let timestamp: u64 = ts
+        .trim()
+        .parse()
+        .map_err(|_| format!("unparseable commit timestamp: {:?}", ts))?;
+
+    Ok((sha.to_owned(), timestamp))
+}
+
+/// Reads what's actually on this node's disk for one repo right now, without
+/// cloning, fetching, or resetting anything. Shared between the post-sync
+/// capture in [`sync_configured_repos`] (after a real sync, so the checkout
+/// really is at `origin`) and the read-only `GitReposStatus` verb (never
+/// synced this call, so freshness against `origin` is unknown) -- callers
+/// tell the two apart via `sync_status_if_hydrated`.
+async fn inspect_repo_disk_state(auth: &GitAuth, sync_status_if_hydrated: &str) -> RepoHydrationResult {
+    let repo_id = auth.generate_id().to_string();
+    let dest_path = get_repo_path(auth).to_string_lossy().to_string();
+
+    if !Path::new(&dest_path).exists() {
+        return RepoHydrationResult {
+            id: repo_id,
+            is_hydrated: false,
+            commit_sha: None,
+            last_sync_timestamp: None,
+            sync_status: "failed".to_owned(),
+            error_message: Some("checkout does not exist on this node".to_owned()),
+        };
+    }
+
+    match git_head_commit(&dest_path).await {
+        Ok((sha, timestamp)) => RepoHydrationResult {
+            id: repo_id,
+            is_hydrated: true,
+            commit_sha: Some(sha),
+            last_sync_timestamp: Some(timestamp),
+            sync_status: sync_status_if_hydrated.to_owned(),
+            error_message: None,
+        },
+        Err(err) => RepoHydrationResult {
+            id: repo_id,
+            is_hydrated: false,
+            commit_sha: None,
+            last_sync_timestamp: None,
+            sync_status: "failed".to_owned(),
+            error_message: Some(err),
+        },
+    }
+}
+
+fn failed_hydration(repo_id: &str, message: String) -> RepoHydrationResult {
+    RepoHydrationResult {
+        id: repo_id.to_owned(),
+        is_hydrated: false,
+        commit_sha: None,
+        last_sync_timestamp: None,
+        sync_status: "failed".to_owned(),
+        error_message: Some(message),
+    }
+}
+
+/// Reads every configured repo's real on-disk state without syncing
+/// anything -- the answer to `GitReposStatus`, and to a Repos page load in
+/// general (which must never itself trigger a clone/fetch/reset; only an
+/// explicit "sync now" does).
+pub async fn read_repo_status(credentials: &GitCredentials) -> Vec<RepoHydrationResult> {
+    let mut results = Vec::with_capacity(credentials.auth_items.len());
+    for auth in &credentials.auth_items {
+        results.push(inspect_repo_disk_state(auth, "idle").await);
+    }
+    results
+}
+
+pub async fn sync_configured_repos(credentials: &GitCredentials) -> Result<Vec<RepoHydrationResult>, ErrorArrayItem> {
     let auth_header = github_auth_header();
+    let mut results = Vec::with_capacity(credentials.auth_items.len());
 
     for auth in &credentials.auth_items {
         let repo_id = auth.generate_id().to_string();
@@ -1061,6 +1239,12 @@ pub async fn sync_configured_repos(credentials: &GitCredentials) -> Result<(), E
 
         // check if checkout exists
         let exists = project_path.exists();
+
+        // Set on any failed step that isn't already an early `continue` below
+        // -- so the common tail can push a `failed` result instead of trying
+        // (and misreporting) a `git log` against a checkout left inconsistent
+        // by that failure.
+        let mut sync_error: Option<String> = None;
 
         if !exists {
             log!(
@@ -1087,12 +1271,9 @@ pub async fn sync_configured_repos(credentials: &GitCredentials) -> Result<(), E
             })?;
 
             if !output.status.success() {
-                log!(
-                    LogLevel::Error,
-                    "{}: git clone failed: {}",
-                    repo_id,
-                    String::from_utf8_lossy(&output.stderr)
-                );
+                let message = String::from_utf8_lossy(&output.stderr).trim().to_owned();
+                log!(LogLevel::Error, "{}: git clone failed: {}", repo_id, message);
+                results.push(failed_hydration(&repo_id, format!("git clone failed: {}", message)));
                 continue;
             }
 
@@ -1111,12 +1292,9 @@ pub async fn sync_configured_repos(credentials: &GitCredentials) -> Result<(), E
             })?;
 
             if !output.status.success() {
-                log!(
-                    LogLevel::Error,
-                    "{}: git checkout failed: {}",
-                    repo_id,
-                    String::from_utf8_lossy(&output.stderr)
-                );
+                let message = String::from_utf8_lossy(&output.stderr).trim().to_owned();
+                log!(LogLevel::Error, "{}: git checkout failed: {}", repo_id, message);
+                sync_error = Some(format!("git checkout failed: {}", message));
             }
         } else {
             // Already exists - let's force pull/sync it to origin branch
@@ -1147,12 +1325,9 @@ pub async fn sync_configured_repos(credentials: &GitCredentials) -> Result<(), E
             })?;
 
             if !output.status.success() {
-                log!(
-                    LogLevel::Error,
-                    "{}: git fetch failed: {}",
-                    repo_id,
-                    String::from_utf8_lossy(&output.stderr)
-                );
+                let message = String::from_utf8_lossy(&output.stderr).trim().to_owned();
+                log!(LogLevel::Error, "{}: git fetch failed: {}", repo_id, message);
+                results.push(failed_hydration(&repo_id, format!("git fetch failed: {}", message)));
                 continue;
             }
 
@@ -1176,12 +1351,9 @@ pub async fn sync_configured_repos(credentials: &GitCredentials) -> Result<(), E
             })?;
 
             if !output.status.success() {
-                log!(
-                    LogLevel::Error,
-                    "{}: git checkout failed: {}",
-                    repo_id,
-                    String::from_utf8_lossy(&output.stderr)
-                );
+                let message = String::from_utf8_lossy(&output.stderr).trim().to_owned();
+                log!(LogLevel::Error, "{}: git checkout failed: {}", repo_id, message);
+                results.push(failed_hydration(&repo_id, format!("git checkout failed: {}", message)));
                 continue;
             }
 
@@ -1200,12 +1372,9 @@ pub async fn sync_configured_repos(credentials: &GitCredentials) -> Result<(), E
             })?;
 
             if !output.status.success() {
-                log!(
-                    LogLevel::Error,
-                    "{}: git reset failed: {}",
-                    repo_id,
-                    String::from_utf8_lossy(&output.stderr)
-                );
+                let message = String::from_utf8_lossy(&output.stderr).trim().to_owned();
+                log!(LogLevel::Error, "{}: git reset failed: {}", repo_id, message);
+                results.push(failed_hydration(&repo_id, format!("git reset failed: {}", message)));
                 continue;
             }
 
@@ -1229,9 +1398,24 @@ pub async fn sync_configured_repos(credentials: &GitCredentials) -> Result<(), E
                 err.err_mesg
             );
         }
+
+        results.push(match sync_error {
+            Some(message) => failed_hydration(&repo_id, message),
+            None => match git_head_commit(&dest_path).await {
+                Ok((sha, timestamp)) => RepoHydrationResult {
+                    id: repo_id.clone(),
+                    is_hydrated: true,
+                    commit_sha: Some(sha),
+                    last_sync_timestamp: Some(timestamp),
+                    sync_status: "latest".to_owned(),
+                    error_message: None,
+                },
+                Err(err) => failed_hydration(&repo_id, err),
+            },
+        });
     }
 
-    Ok(())
+    Ok(results)
 }
 
 /// Directory watchdog uses for each app's live `AppState` snapshot. Kept
@@ -1514,6 +1698,84 @@ mod tests {
             server: GitServer::GitHub,
             token: None,
         }
+    }
+
+    /// A repo with no checkout on disk must report `failed`/not-hydrated, and
+    /// must not create anything -- `GitReposStatus`'s whole point is being
+    /// safe to call on every page load, so it has to be a pure read.
+    #[tokio::test]
+    async fn inspect_repo_disk_state_reports_missing_checkout_as_failed() {
+        let _fs_guard = TEST_FS_LOCK.lock().unwrap();
+        let root = get_repo_root();
+        let _ = fs::remove_dir_all(root);
+        fs::create_dir_all(root).unwrap();
+
+        let missing_auth = auth("acme", "missing", "main");
+        let result = inspect_repo_disk_state(&missing_auth, "idle").await;
+
+        assert_eq!(result.id, missing_auth.generate_id().to_string());
+        assert!(!result.is_hydrated);
+        assert_eq!(result.sync_status, "failed");
+        assert!(result.commit_sha.is_none());
+        assert!(result.last_sync_timestamp.is_none());
+        assert!(result.error_message.is_some());
+
+        let _ = fs::remove_dir_all(root);
+    }
+
+    /// A real checkout on disk -- built with plain `git`, not this module's
+    /// own sync path, so this is exercising `inspect_repo_disk_state`'s own
+    /// reading logic -- reports `is_hydrated` with the real HEAD commit and
+    /// its timestamp, tagged `idle` (read-only; never confirmed against
+    /// `origin` this call, unlike a real sync's `latest`).
+    #[tokio::test]
+    async fn inspect_repo_disk_state_reads_a_real_checkout() {
+        let _fs_guard = TEST_FS_LOCK.lock().unwrap();
+        let root = get_repo_root();
+        let _ = fs::remove_dir_all(root);
+        fs::create_dir_all(root).unwrap();
+
+        let present_auth = auth("acme", "present", "main");
+        let dest = get_repo_path(&present_auth);
+        fs::create_dir_all(&dest).unwrap();
+
+        async fn git(dir: &Path, args: &[&str]) {
+            let output = tokio::process::Command::new("git")
+                .arg("-C")
+                .arg(dir)
+                .args(args)
+                .output()
+                .await
+                .expect("spawning git");
+            assert!(
+                output.status.success(),
+                "git {:?} failed: {}",
+                args,
+                String::from_utf8_lossy(&output.stderr)
+            );
+        }
+
+        git(&dest, &["init", "-q"]).await;
+        git(&dest, &["config", "user.email", "test@example.com"]).await;
+        git(&dest, &["config", "user.name", "Test"]).await;
+        fs::write(dest.join("README.md"), "hello").unwrap();
+        git(&dest, &["add", "README.md"]).await;
+        git(&dest, &["commit", "-q", "-m", "initial"]).await;
+
+        let result = inspect_repo_disk_state(&present_auth, "idle").await;
+
+        assert!(result.is_hydrated);
+        assert_eq!(result.sync_status, "idle");
+        assert!(result.commit_sha.as_ref().is_some_and(|sha| sha.len() == 40));
+        assert!(result.last_sync_timestamp.unwrap() > 0);
+        assert!(result.error_message.is_none());
+
+        let credentials = GitCredentials { auth_items: vec![present_auth] };
+        let batch = read_repo_status(&credentials).await;
+        assert_eq!(batch.len(), 1);
+        assert!(batch[0].is_hydrated);
+
+        let _ = fs::remove_dir_all(root);
     }
 
     /// Each test gets its own directory so the `0600` and leftover-temp
