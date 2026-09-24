@@ -1690,12 +1690,21 @@ mod tests {
         let _ = fs::remove_dir_all(dir);
     }
 
+    /// A mutating verb (`GitReposAdd`/`Set`/`Update`/`Hydrate`, ...) always
+    /// triggers a real `sync_configured_repos` afterward, which will really
+    /// try to `git clone`/`fetch` this repo's URL. Point it at a port on
+    /// loopback nothing listens on rather than a real host: a fake path
+    /// under a real GitHub/GitLab host still resolves and connects, and
+    /// `git clone`'s failure mode for "repo doesn't exist" can hang far
+    /// longer than the fast, deterministic "connection refused" this gets
+    /// instead -- these tests care about the git.cf CRUD logic, not about
+    /// sync actually succeeding.
     fn auth(user: &str, repo: &str, branch: &str) -> GitAuth {
         GitAuth {
             user: Stringy::from(user),
             repo: Stringy::from(repo),
             branch: Stringy::from(branch),
-            server: GitServer::GitHub,
+            server: GitServer::Custom("https://127.0.0.1:1".to_owned()),
             token: None,
         }
     }
@@ -1929,6 +1938,17 @@ mod tests {
 
     /// The whole surface driven the way the portal drives it, with `reload:
     /// false` so nothing reaches for a watchdog socket that is not there.
+    ///
+    /// Every mutating verb here also triggers a real `sync_configured_repos`
+    /// afterward (see `run`), which really tries to `git clone`/`fetch` the
+    /// repo's URL -- a `server: "GitHub"` fixture pointed this at a genuine
+    /// `github.com/acme/web` that 404s over plain HTTP in well under a
+    /// second, but hung the `git` CLI itself indefinitely in at least one
+    /// sandbox, taking this test's `WRITE_LOCK` hold (and therefore
+    /// `bad_input_fails_in_band`, which contends for the same lock) down
+    /// with it. `Custom("https://127.0.0.1:1")` fails in milliseconds
+    /// ("connection refused") and needs no network at all -- this test
+    /// cares about the git.cf CRUD logic, not about the sync succeeding.
     #[tokio::test]
     async fn verbs_add_update_remove_and_restore() {
         let path = scratch("verbs");
@@ -1937,7 +1957,7 @@ mod tests {
         // An unconfigured node reads as an empty list, not an error.
         assert!(repos_of(&handle("GitReposGet", "", &config).await).is_empty());
 
-        let add = r#"{"user":"acme","repo":"web","branch":"main","server":"GitHub","reload":false}"#;
+        let add = r#"{"user":"acme","repo":"web","branch":"main","server":{"Custom":"https://127.0.0.1:1"},"reload":false}"#;
         let ids = repos_of(&handle("GitReposAdd", add, &config).await);
         assert_eq!(ids.len(), 1);
         let original_id = ids[0].clone();
@@ -1955,7 +1975,7 @@ mod tests {
 
         // Editing the branch rehashes the id, so the entry moves.
         let update = format!(
-            r#"{{"id":"{original_id}","repo":{{"user":"acme","repo":"web","branch":"dev","server":"GitHub"}},"reload":false}}"#
+            r#"{{"id":"{original_id}","repo":{{"user":"acme","repo":"web","branch":"dev","server":{{"Custom":"https://127.0.0.1:1"}}}},"reload":false}}"#
         );
         let moved = handle("GitReposUpdate", &update, &config).await;
         let AppMessage::Response(ref response) = moved else { panic!() };
