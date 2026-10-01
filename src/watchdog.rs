@@ -170,7 +170,12 @@ pub struct ExpectedAppsJson {
 pub fn handles(verb: &str) -> bool {
     matches!(
         verb,
-        "WatchdogListExpected" | "WatchdogGetConfigFile" | "WatchdogSetConfigFile" | "WatchdogRecalculateAllowedClients"
+        "WatchdogListExpected"
+            | "WatchdogGetConfigFile"
+            | "WatchdogSetConfigFile"
+            | "WatchdogRecalculateAllowedClients"
+            | "WatchdogListBuilds"
+            | "WatchdogGetApplication"
     )
 }
 
@@ -270,8 +275,125 @@ async fn run(verb: &str, body: &str) -> Result<String, String> {
             };
             serde_json::to_string(&json).map_err(|err| format!("JSON serialization error: {}", err))
         }
+        "WatchdogListBuilds" => {
+            let builds = list_builds().await.map_err(|err| err.err_mesg.to_string())?;
+            serde_json::to_string(&builds_json(builds)).map_err(|err| format!("JSON serialization error: {}", err))
+        }
+        "WatchdogGetApplication" => {
+            let req: GetApplicationJson = if body.trim().is_empty() {
+                return Err("Missing JSON body for WatchdogGetApplication".to_string());
+            } else {
+                serde_json::from_str(body).map_err(|err| format!("Invalid JSON: {}", err))?
+            };
+            let res = get_application(&req.application).await.map_err(|err| err.err_mesg.to_string())?;
+            serde_json::to_string(&application_json(&req.application, res, LOG_TAIL_LINES))
+                .map_err(|err| format!("JSON serialization error: {}", err))
+        }
         other => Err(format!("Unknown watchdog config verb: {}", other)),
     }
+}
+
+/// How many trailing stdout/stderr lines `WatchdogGetApplication` returns: enough
+/// to show why a build or start failed, without shipping the whole rolling buffer.
+const LOG_TAIL_LINES: usize = 20;
+
+#[derive(Deserialize)]
+pub struct GetApplicationJson {
+    pub application: String,
+}
+
+/// `BUILD_RESULT_SUCCESS` -> `success`. Anything this build does not recognise is
+/// `unknown` rather than guessed at.
+fn build_result_name(code: i32) -> &'static str {
+    match proto::BuildResult::try_from(code) {
+        Ok(proto::BuildResult::Success) => "success",
+        Ok(proto::BuildResult::Failure) => "failure",
+        _ => "unknown",
+    }
+}
+
+#[derive(Serialize)]
+pub struct BuildJson {
+    pub name: String,
+    pub result: &'static str,
+    pub timestamp: u64,
+    pub vetted: bool,
+}
+
+#[derive(Serialize)]
+pub struct BuildsJson {
+    pub builds: Vec<BuildJson>,
+}
+
+pub fn builds_json(list: proto::BuildStatusList) -> BuildsJson {
+    BuildsJson {
+        builds: list
+            .builds
+            .into_iter()
+            .map(|b| BuildJson { name: b.name, result: build_result_name(b.result), timestamp: b.timestamp, vetted: b.vetted })
+            .collect(),
+    }
+}
+
+#[derive(Serialize)]
+pub struct ApplicationJson {
+    pub found: bool,
+    pub name: String,
+    pub status: String,
+    pub pid: Option<u32>,
+    pub last_updated: u64,
+    /// 0 when the app has no allocated port.
+    pub port: u32,
+    pub stdout: Vec<String>,
+    pub stderr: Vec<String>,
+}
+
+fn tail(entries: &[proto::StdLogEntry], n: usize) -> Vec<String> {
+    let start = entries.len().saturating_sub(n);
+    entries[start..].iter().map(|e| e.line.clone()).collect()
+}
+
+pub fn application_json(name: &str, res: proto::ApplicationStatusResponse, tail_lines: usize) -> ApplicationJson {
+    match (res.found, res.status) {
+        (true, Some(s)) => ApplicationJson {
+            found: true,
+            name: s.name,
+            status: s.status,
+            pid: s.pid,
+            last_updated: s.last_updated,
+            port: s.port,
+            stdout: tail(&s.stdout, tail_lines),
+            stderr: tail(&s.stderr, tail_lines),
+        },
+        _ => ApplicationJson {
+            found: false,
+            name: name.to_owned(),
+            status: String::new(),
+            pid: None,
+            last_updated: 0,
+            port: 0,
+            stdout: Vec::new(),
+            stderr: Vec::new(),
+        },
+    }
+}
+
+pub async fn list_builds() -> Result<proto::BuildStatusList, ErrorArrayItem> {
+    let mut client = watchdog_client().await?;
+    Ok(client
+        .list_builds(Request::new(proto::Empty {}))
+        .await
+        .map_err(|err| grpc_error(format!("Watchdog ListBuilds failed: {}", err)))?
+        .into_inner())
+}
+
+pub async fn get_application(application: &str) -> Result<proto::ApplicationStatusResponse, ErrorArrayItem> {
+    let mut client = watchdog_client().await?;
+    Ok(client
+        .get_application(Request::new(proto::ApplicationStatusRequest { name: application.to_owned() }))
+        .await
+        .map_err(|err| grpc_error(format!("Watchdog GetApplication failed: {}", err)))?
+        .into_inner())
 }
 
 pub async fn list_expected_apps() -> Result<proto::ExpectedAppsList, ErrorArrayItem> {
@@ -387,4 +509,62 @@ pub async fn recalculate_allowed_clients() -> Result<proto::CommandResponse, Err
         .into_inner();
 
     Ok(response)
+}
+
+#[cfg(test)]
+mod deploy_status_tests {
+    use super::*;
+
+    fn line(n: usize) -> proto::StdLogEntry {
+        proto::StdLogEntry { timestamp: n as u64, line: format!("line {n}") }
+    }
+
+    #[test]
+    fn the_new_verbs_are_recognised() {
+        assert!(handles("WatchdogListBuilds"));
+        assert!(handles("WatchdogGetApplication"));
+        assert!(!handles("WatchdogNope"));
+    }
+
+    #[test]
+    fn builds_are_reported_with_words_not_enum_numbers() {
+        let list = proto::BuildStatusList {
+            builds: vec![
+                proto::BuildStatusMessage { name: "ais_a".into(), result: proto::BuildResult::Success as i32, timestamp: 5, vetted: true },
+                proto::BuildStatusMessage { name: "ais_b".into(), result: proto::BuildResult::Failure as i32, timestamp: 6, vetted: false },
+                proto::BuildStatusMessage { name: "ais_c".into(), result: 99, timestamp: 7, vetted: false },
+            ],
+        };
+        let json = builds_json(list);
+        let results: Vec<_> = json.builds.iter().map(|b| (b.name.as_str(), b.result)).collect();
+        assert_eq!(results, [("ais_a", "success"), ("ais_b", "failure"), ("ais_c", "unknown")]);
+    }
+
+    #[test]
+    fn an_application_carries_its_port_and_only_the_log_tail() {
+        let status = proto::ApplicationStatusMessage {
+            name: "ais_a".into(),
+            status: "Running".into(),
+            pid: Some(42),
+            last_updated: 9,
+            port: 20007,
+            stdout: (0..50).map(line).collect(),
+            stderr: vec![line(1)],
+            ..Default::default()
+        };
+        let json = application_json("ais_a", proto::ApplicationStatusResponse { found: true, status: Some(status) }, 20);
+        assert!(json.found);
+        assert_eq!((json.status.as_str(), json.port, json.pid), ("Running", 20007, Some(42)));
+        assert_eq!(json.stdout.len(), 20);
+        assert_eq!(json.stdout.first().map(String::as_str), Some("line 30"), "the LAST 20 lines");
+        assert_eq!(json.stderr, ["line 1"]);
+    }
+
+    #[test]
+    fn an_unknown_application_is_not_found_not_an_error() {
+        let json = application_json("ais_zzz", proto::ApplicationStatusResponse { found: false, status: None }, 20);
+        assert!(!json.found);
+        assert_eq!(json.name, "ais_zzz");
+        assert_eq!(json.port, 0);
+    }
 }
