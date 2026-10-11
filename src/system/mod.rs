@@ -16,6 +16,9 @@ pub mod manager;
 // the git monitor's repo list, read and written on behalf of the portal
 pub mod git_repos;
 
+// shared GitAuth token resolver (copied verbatim from GitMonitor) — not used yet in this part
+pub mod git_credentials;
+
 // Noise_NK static keys for both simple_comms channels
 pub mod noise;
 
